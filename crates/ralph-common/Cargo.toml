@@ -1,0 +1,16 @@
+[package]
+name = "ralph-common"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+rstest_reuse.workspace = true
+tempfile.workspace = true

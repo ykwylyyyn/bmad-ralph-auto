@@ -125,7 +125,7 @@ cd bmad-ralph
 |-------|---------|---------|
 | `serde` | 1.x | Serialization/deserialization framework with derive |
 | `serde_json` | 1.x | JSON serialization for Unix socket protocol |
-| `toml` | 0.9.x | TOML config parsing for ralph.toml and state files |
+| `toml` | 1.x | TOML config parsing for ralph.toml and state files |
 
 **Terminal Output — Static Commands:**
 
@@ -276,7 +276,7 @@ cd bmad-ralph
 |-------|---------|---------|
 | `serde` | 1.x | Serialization/deserialization framework with derive |
 | `serde_json` | 1.x | JSON serialization for Unix socket protocol |
-| `toml` | 0.9.x | TOML config parsing for ralph.toml |
+| `toml` | 1.x | TOML config parsing for ralph.toml |
 | `serde_yaml_ng` | 0.10.x | YAML frontmatter parsing for BMAD artifacts (replaces deprecated serde_yaml) |
 
 **State Persistence:**
@@ -613,14 +613,14 @@ members = [
     "crates/ralph-worker",
     "crates/ralph-pipeline",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.dependencies]
 tokio = { version = "1.49", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
-toml = "0.9"
+toml = "1"
 clap = { version = "4.5", features = ["derive"] }
 thiserror = "2"
 anyhow = "1"

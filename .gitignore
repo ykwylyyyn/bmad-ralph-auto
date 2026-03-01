@@ -1,8 +1,14 @@
-# Claude Code session files
-.claude-bar/
+# Build artifacts
+target/
+
+# Ralph local config
+.ralph/
 
 # OS
 .DS_Store
+
+# Claude Code session state
+.claude/
 
 # Editor
 *.swp
@@ -11,3 +17,6 @@
 
 # Node (for _bmad submodule dev)
 node_modules/
+
+# Worktree
+_worktree
