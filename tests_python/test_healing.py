@@ -1,12 +1,48 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 import unittest
+from pathlib import Path
 
-from ralph.common.db.store import StateStore
-from ralph.common.models import HealingLayer, Story, StoryState
+from ralph.common.db.store import StateStore, WorkerRecord
+from ralph.common.models import HealingLayer, Story, StoryState, WorkerHealth, WorkerState
 from ralph.config import RalphConfig, resolve_config
-from ralph.pipeline.healing import HealingOutcomeKind, Layer1StepRetry, StepFailure
+from ralph.pipeline.healing import (
+    HealingOutcomeKind,
+    Layer1StepRetry,
+    Layer2WorkerRestart,
+    StepFailure,
+    WorkerRestartRequest,
+    worker_restart_reason,
+)
+
+
+class FakeWorkerGateway:
+    def __init__(self, worktrees_root: Path) -> None:
+        self.worktrees_root = worktrees_root
+        self.killed: list[int] = []
+        self.destroyed: list[int] = []
+        self.spawned: list[tuple[int, int]] = []
+
+    def kill_worker(self, worker_id: int) -> None:
+        self.killed.append(worker_id)
+
+    def destroy_worktree(self, worker_id: int) -> None:
+        self.destroyed.append(worker_id)
+        worktree = self.worktrees_root / f"worker-{worker_id}"
+        if worktree.exists():
+            for child in sorted(worktree.rglob("*"), reverse=True):
+                if child.is_file():
+                    child.unlink()
+            worktree.rmdir()
+
+    def spawn_fresh(self, worker_id: int, story: Story) -> Path:
+        self.spawned.append((worker_id, story.id))
+        worktree = self.worktrees_root / f"worker-{worker_id}"
+        worktree.mkdir(parents=True, exist_ok=True)
+        (worktree / ".ralph-fresh").write_text("clean", encoding="utf-8")
+        return worktree
 
 
 class HealingTests(unittest.TestCase):
@@ -90,6 +126,135 @@ class HealingTests(unittest.TestCase):
     def test_resolve_config_reads_retry_limit(self) -> None:
         resolved = resolve_config(overrides=RalphConfig(retry_limit=5))
         self.assertEqual(resolved.retry_limit, 5)
+
+
+class Layer2WorkerRestartTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.worktrees_root = Path(self.temp_dir.name)
+        self.store = StateStore.open_in_memory()
+        self.store.upsert_story(
+            Story(id=1, title="Restart story", state=StoryState.IN_PROGRESS, worker_id=2)
+        )
+        self.store.upsert_worker(
+            WorkerRecord(
+                id=2,
+                state=WorkerState.RUNNING,
+                health=WorkerHealth.DEGRADED,
+                worktree_path="/tmp/worker-2-old",
+                pid=4242,
+            )
+        )
+        self.gateway = FakeWorkerGateway(self.worktrees_root)
+        self.handler = Layer2WorkerRestart(self.store, self.gateway)
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.temp_dir.cleanup()
+
+    def test_escalation_kills_worker_destroys_worktree_and_spawns_fresh(self) -> None:
+        outcome = self.handler.handle_escalation(
+            WorkerRestartRequest(story_id=1, worker_id=2, reason="layer 1 exhausted")
+        )
+
+        self.assertEqual(outcome.kind, HealingOutcomeKind.RESTART)
+        self.assertEqual(outcome.old_worker_id, 2)
+        self.assertEqual(outcome.new_worker_id, 2)
+        self.assertEqual(self.gateway.killed, [2])
+        self.assertEqual(self.gateway.destroyed, [2])
+        self.assertEqual(self.gateway.spawned, [(2, 1)])
+
+        worker = self.store.get_worker(2)
+        self.assertEqual(worker.state, WorkerState.RUNNING)
+        self.assertNotEqual(worker.worktree_path, "/tmp/worker-2-old")
+        self.assertTrue(Path(worker.worktree_path).joinpath(".ralph-fresh").exists())
+
+        story = self.store.get_story(1)
+        self.assertEqual(story.state, StoryState.IN_PROGRESS)
+        self.assertEqual(story.worker_id, 2)
+
+    def test_restart_records_healing_attempt_with_worker_ids(self) -> None:
+        self.handler.handle_escalation(
+            WorkerRestartRequest(story_id=1, worker_id=2, reason="layer 1 exhausted")
+        )
+
+        attempts = self.store.list_healing_attempts(story_id=1)
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0].layer, HealingLayer.WORKER_RESTART)
+        self.assertEqual(attempts[0].reason, worker_restart_reason(2, 2))
+
+    def test_restart_requeues_story_before_fresh_spawn(self) -> None:
+        observed_states: list[StoryState] = []
+        store = self.store
+
+        class TrackingGateway(FakeWorkerGateway):
+            def spawn_fresh(self, worker_id: int, story: Story) -> Path:
+                observed_states.append(store.get_story(story.id).state)
+                return super().spawn_fresh(worker_id, story)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gateway = TrackingGateway(Path(tmp))
+            handler = Layer2WorkerRestart(store, gateway)
+
+            handler.handle_escalation(
+                WorkerRestartRequest(story_id=1, worker_id=2, reason="layer 1 exhausted")
+            )
+
+        self.assertEqual(observed_states, [StoryState.QUEUED])
+
+    def test_restart_success_marks_story_done_and_records_self_healed(self) -> None:
+        self.handler.handle_escalation(
+            WorkerRestartRequest(story_id=1, worker_id=2, reason="layer 1 exhausted")
+        )
+
+        outcome = self.handler.handle_restart_success(story_id=1, worker_id=2)
+
+        self.assertEqual(outcome.kind, HealingOutcomeKind.SELF_HEALED)
+        story = self.store.get_story(1)
+        self.assertEqual(story.state, StoryState.DONE)
+        attempts = self.store.list_healing_attempts(story_id=1)
+        self.assertEqual(attempts[-1].reason, "self-healed")
+
+    def test_restart_failure_escalates_to_layer3(self) -> None:
+        self.handler.handle_escalation(
+            WorkerRestartRequest(story_id=1, worker_id=2, reason="layer 1 exhausted")
+        )
+
+        outcome = self.handler.handle_restart_failure(
+            WorkerRestartRequest(story_id=1, worker_id=2, reason="fresh worker failed")
+        )
+
+        self.assertEqual(outcome.kind, HealingOutcomeKind.ESCALATE_LAYER3)
+        self.assertEqual(outcome.reason, "fresh worker failed")
+
+    def test_layer1_to_layer2_handoff(self) -> None:
+        layer1 = Layer1StepRetry(self.store, retry_limit=2)
+        for _ in range(2):
+            layer1.handle_step_failure(StepFailure(story_id=1, worker_id=2, reason="fail"))
+
+        escalation = layer1.handle_step_failure(
+            StepFailure(story_id=1, worker_id=2, reason="final fail")
+        )
+        self.assertEqual(escalation.kind, HealingOutcomeKind.ESCALATE_LAYER2)
+
+        restart = self.handler.handle_escalation(
+            WorkerRestartRequest(
+                story_id=escalation.story_id,
+                worker_id=escalation.worker_id,
+                reason=escalation.reason or "escalated",
+            )
+        )
+        self.assertEqual(restart.kind, HealingOutcomeKind.RESTART)
+
+    def test_healing_activated_logs_warn_for_worker_restart(self) -> None:
+        with self.assertLogs("ralph.pipeline.healing.worker_restart", level="WARNING") as captured:
+            self.handler.handle_escalation(
+                WorkerRestartRequest(story_id=1, worker_id=2, reason="layer 1 exhausted")
+            )
+
+        record = captured.records[0]
+        self.assertEqual(record.getMessage(), "healing activated")
+        self.assertEqual(record.layer, "worker_restart")
 
 
 if __name__ == "__main__":

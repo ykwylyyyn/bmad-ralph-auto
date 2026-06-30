@@ -1,14 +1,31 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 from typing import Self
 
-from ralph.common.models import HealingAttempt, HealingLayer, Story, StoryState
+from ralph.common.models import (
+    HealingAttempt,
+    HealingLayer,
+    Story,
+    StoryState,
+    WorkerHealth,
+    WorkerState,
+)
 
-from .errors import StoryNotFoundError
+from .errors import StoryNotFoundError, WorkerNotFoundError
 from .schema import apply_schema
+
+
+@dataclass(slots=True)
+class WorkerRecord:
+    id: int
+    state: WorkerState
+    health: WorkerHealth
+    worktree_path: str
+    pid: int | None = None
 
 
 class StateStore:
@@ -93,6 +110,77 @@ class StateStore:
                 raise StoryNotFoundError(story_id)
         return self.get_story(story_id)
 
+    def requeue_story(self, story_id: int) -> Story:
+        now = _now()
+        with self._connection:
+            cursor = self._connection.execute(
+                """
+                UPDATE stories
+                SET state = ?, worker_id = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (StoryState.QUEUED.value, now, story_id),
+            )
+            if cursor.rowcount != 1:
+                raise StoryNotFoundError(story_id)
+        return self.get_story(story_id)
+
+    def assign_story_to_worker(self, story_id: int, worker_id: int) -> Story:
+        now = _now()
+        with self._connection:
+            cursor = self._connection.execute(
+                """
+                UPDATE stories
+                SET state = ?, worker_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (StoryState.IN_PROGRESS.value, worker_id, now, story_id),
+            )
+            if cursor.rowcount != 1:
+                raise StoryNotFoundError(story_id)
+        return self.get_story(story_id)
+
+    def upsert_worker(self, worker: WorkerRecord) -> WorkerRecord:
+        now = _now()
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO workers (id, state, health, worktree_path, pid, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    state = excluded.state,
+                    health = excluded.health,
+                    worktree_path = excluded.worktree_path,
+                    pid = excluded.pid,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    worker.id,
+                    worker.state.value,
+                    worker.health.value,
+                    worker.worktree_path,
+                    worker.pid,
+                    now,
+                    now,
+                ),
+            )
+        return self.get_worker(worker.id)
+
+    def get_worker(self, worker_id: int) -> WorkerRecord:
+        row = self._connection.execute(
+            "SELECT id, state, health, worktree_path, pid FROM workers WHERE id = ?",
+            (worker_id,),
+        ).fetchone()
+        if row is None:
+            raise WorkerNotFoundError(worker_id)
+        return _worker_from_row(row)
+
+    def list_workers(self) -> list[WorkerRecord]:
+        rows = self._connection.execute(
+            "SELECT id, state, health, worktree_path, pid FROM workers ORDER BY id"
+        ).fetchall()
+        return [_worker_from_row(row) for row in rows]
+
     def record_healing_attempt(self, attempt: HealingAttempt) -> None:
         with self._connection:
             self._connection.execute(
@@ -152,6 +240,16 @@ def _story_from_row(row: sqlite3.Row) -> Story:
         title=row["title"],
         state=StoryState(row["state"]),
         worker_id=row["worker_id"],
+    )
+
+
+def _worker_from_row(row: sqlite3.Row) -> WorkerRecord:
+    return WorkerRecord(
+        id=row["id"],
+        state=WorkerState(row["state"]),
+        health=WorkerHealth(row["health"]),
+        worktree_path=row["worktree_path"],
+        pid=row["pid"],
     )
 
 
