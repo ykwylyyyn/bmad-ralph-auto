@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bmad-ralph"
+version = "0.1.0"
+description = "Autonomous SDLC pipeline runner"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Ralph contributors" }]
+
+[project.scripts]
+ralph = "ralph.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ralph"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests_python"]
+pythonpath = ["src"]

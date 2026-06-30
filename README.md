@@ -1,67 +1,73 @@
 # Ralph
 
-Autonomous SDLC pipeline runner — a Rust CLI daemon that orchestrates parallel Claude Code worker sessions to execute stories around the clock with self-healing capabilities.
+Autonomous SDLC pipeline runner, now being migrated to a Python CLI daemon that orchestrates parallel Claude Code worker sessions to execute BMAD stories with self-healing capabilities.
 
 Ralph pairs with [BMAD-METHOD](https://github.com/bmad-method) for planning, shifting delivery from human-in-the-loop to human-on-the-loop.
 
 ## How It Works
 
-1. BMAD produces sprint plans with sequenced, dependency-mapped stories
-2. Ralph daemon ingests the plan, analyzes parallelization opportunities
-3. Concurrent Claude Code workers execute stories in isolated git worktrees
-4. Three-layer self-healing (retry → restart → diagnose) handles failures automatically
-5. Developer monitors progress via terminal dashboard and intervenes only when needed
+1. BMAD produces sprint plans with sequenced, dependency-mapped stories.
+2. Ralph daemon ingests the plan and analyzes parallelization opportunities.
+3. Concurrent Claude Code workers execute stories in isolated git worktrees.
+4. Three-layer self-healing handles retry, worker restart, and diagnose escalation.
+5. Developers monitor progress via terminal status and dashboard commands.
 
 ## Architecture
 
-5-crate Cargo workspace:
+Python package with the same bounded contexts as the original Rust plan:
 
-```
-ralph (CLI binary)
-├── ralph-pipeline   — State machine, story scheduling, self-healing
-├── ralph-worker     — Process spawning, health monitoring, worktree isolation
-├── ralph-config     — TOML config with three-tier precedence
-└── ralph-common     — Shared error types, state models, SQLite schema
+```text
+src/ralph/cli.py          # CLI entry point
+src/ralph/pipeline/       # State machine and scheduling contracts
+src/ralph/worker/         # Claude process spawning and output parsing
+src/ralph/config/         # TOML config loading
+src/ralph/common/         # Shared models, protocol types, SQLite schema
 ```
 
-Key choices: SQLite + WAL for persistence, Unix Domain Socket IPC, tokio async runtime.
+Key choices: SQLite + WAL for persistence, JSON request/response protocol types, and `asyncio` for process management.
+
+The previous Rust workspace remains in the repository during migration as reference material.
 
 ## CLI
 
-```
+```bash
 ralph start      # Start daemon, begin processing sprint plan
 ralph stop       # Graceful shutdown
 ralph status     # Pipeline state, story progress, worker health
 ralph watch      # Live terminal dashboard
 ralph diagnose   # Diagnostic report for failed stories
 ralph retry      # Re-feed corrected stories into pipeline
-ralph init       # Initialize ralph on a project
+ralph init       # Initialize Ralph on a project
 ```
+
+Current Python commands are functional stubs matching the existing CLI contract.
 
 ## Development Status
 
-**Early development** — project foundation in progress.
-
-| Epic | Scope | Status |
-|------|-------|--------|
-| 1. Project Foundation & Developer Setup | Workspace scaffold, shared types, config system, init command | In Progress (1/5 stories done) |
-| 2. Autonomous Story Execution | Daemon lifecycle, IPC, state persistence, pipeline engine, workers | Backlog |
-| 3. Pipeline Monitoring & Status Display | Terminal rendering, status commands | Backlog |
-| 4. Self-Healing & Error Recovery | Three-layer healing, diagnose/retry commands | Backlog |
-| 5. Planning Integration | BMAD submodule integration, artifact handoff | Backlog |
+**Early development** - Python migration foundation in progress.
 
 ### Completed
 
-- Story 1-1: Cargo workspace scaffold & CLI entry point
+- Python package scaffold and `ralph` CLI entry point
+- Shared domain models, protocol DTOs, and SQLite schema
+- Config loading from TOML
+- Claude process abstraction and output parser
+- Python regression tests for CLI, config, common models/schema, and worker output parsing
 
-## Build
+## Build And Test
 
 ```bash
-cargo build --workspace
-make test-all    # tests + clippy + fmt-check
+python -m ralph --help
+make test-all
 ```
 
-Requires Rust 2024 edition (stable toolchain, pinned via `rust-toolchain.toml`).
+Requires Python 3.11 or newer. Use `PYTHONPATH=src python -m ralph --help` when running directly from a checkout without installing the package.
+
+Legacy Rust targets are still available during migration when Cargo is installed:
+
+```bash
+make rust-test
+```
 
 ## License
 
