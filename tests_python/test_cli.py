@@ -80,7 +80,8 @@ class CliTests(unittest.TestCase):
             try:
                 code, stdout, _stderr = self.run_cli("start", "--project-dir", tmp)
                 self.assertEqual(code, 0)
-                self.assertIn("start: running", stdout)
+                self.assertIn("✓ Starting daemon done", stdout)
+                self.assertIn("※ Ralph", stdout)
 
                 code, stdout, _stderr = self.run_cli("status", "--project-dir", tmp, "--detail")
                 self.assertEqual(code, 0)
@@ -88,9 +89,18 @@ class CliTests(unittest.TestCase):
 
                 code, stdout, _stderr = self.run_cli("stop", "--project-dir", tmp)
                 self.assertEqual(code, 0)
-                self.assertIn("stop: stopped", stdout)
+                self.assertIn("✓ Stopping daemon done", stdout)
+                self.assertIn("stopped", stdout)
             finally:
                 self.run_cli("stop", "--project-dir", tmp)
+
+    def test_no_color_suppresses_ansi_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            code, stdout, _stderr = self.run_cli("--no-color", "start", "--project-dir", tmp)
+            self.assertEqual(code, 0)
+            self.assertNotIn("\033[", stdout)
+            self.assertIn("※ Ralph", stdout)
+            self.run_cli("--no-color", "stop", "--project-dir", tmp)
 
     def test_generate_completion_rejects_unknown_shell(self) -> None:
         with self.assertRaises(ValueError):

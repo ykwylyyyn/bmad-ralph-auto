@@ -9,6 +9,8 @@ from .common.protocol import Request
 from .config import RalphConfig, default_project_config_path, default_user_config_path, resolve_config
 from .daemon import RuntimePaths, read_status, request_daemon, run_daemon, start_daemon, stop_daemon
 from .init_project import init_project
+from .render import Spinner, error_message, resolve_theme, section_border
+from .render.theme import Semantic
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    args.theme = resolve_theme(no_color=args.no_color)
     handler = getattr(args, "handler", None)
     if handler is None:
         parser.print_help()
@@ -127,13 +130,36 @@ def _resolved_config(args: argparse.Namespace) -> RalphConfig:
 def _run_start(args: argparse.Namespace) -> None:
     config = _resolved_config(args)
     init_project(args.project_dir, max_workers=config.max_workers or 5)
-    status = start_daemon(args.project_dir, config)
-    print(f"start: {status.state} pid={status.pid} max_workers={status.max_workers}")
+    with Spinner("Starting daemon", theme=args.theme):
+        status = start_daemon(args.project_dir, config)
+
+    context_semantic = Semantic.ACTIVE if status.state == "starting" else Semantic.HEALTHY
+    print(
+        section_border(
+            "Ralph",
+            context=status.state,
+            context_semantic=context_semantic,
+            theme=args.theme,
+        )
+    )
+    print(
+        f"  pid={args.theme.bold(str(status.pid))} "
+        f"max_workers={args.theme.bold(str(status.max_workers))}"
+    )
 
 
 def _run_stop(args: argparse.Namespace) -> None:
-    status = stop_daemon(args.project_dir)
-    print(f"stop: {status.state} pid={status.pid}")
+    with Spinner("Stopping daemon", theme=args.theme):
+        status = stop_daemon(args.project_dir)
+    print(
+        section_border(
+            "Ralph",
+            context=status.state,
+            context_semantic=Semantic.SECONDARY if status.state == "stopped" else Semantic.ACTIVE,
+            theme=args.theme,
+        )
+    )
+    print(f"  pid={args.theme.dim(str(status.pid))}")
 
 
 def _run_status(args: argparse.Namespace) -> None:
