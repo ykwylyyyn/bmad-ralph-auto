@@ -166,18 +166,17 @@ def submodule_update_hint() -> str:
 
 
 def _integrate_bmad_installer(root: Path, bmad_path: Path) -> BmadIntegrationResult | None:
-    if shutil.which(_npx_command()) is None:
+    if not _npx_available():
         return None
 
     result = _run_bmad_installer(root)
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
         return BmadIntegrationResult(
             bmad_path=bmad_path,
             action="failed",
             pinned_ref=None,
             planning_workflows=(),
-            message=detail or "BMAD installer failed",
+            message=_extract_installer_error(result),
         )
 
     if not validate_bmad_layout(bmad_path, root):
@@ -275,7 +274,7 @@ def _integrate_bmad_submodule(
 
 
 def _installer_failure_message(root: Path) -> str:
-    if shutil.which(_npx_command()) is None:
+    if not _npx_available():
         return (
             "Node.js/npx is required to install BMAD (v6+). "
             f"Install Node 20+, then run `{bmad_install_hint(root)}`"
@@ -286,13 +285,34 @@ def _installer_failure_message(root: Path) -> str:
 def _run_bmad_installer(project_dir: Path) -> subprocess.CompletedProcess[str]:
     modules = os.environ.get("RALPH_BMAD_MODULES", DEFAULT_BMAD_MODULES)
     tools = os.environ.get("RALPH_BMAD_TOOLS", DEFAULT_BMAD_TOOLS)
+    package = _npm_package_spec()
+    directory = str(project_dir.resolve())
+
+    if sys.platform == "win32":
+        # npx is a .cmd wrapper on Windows; shell=True avoids spawn issues.
+        command = (
+            f"npx --yes {package} install "
+            f'--directory "{directory}" --modules {modules} --tools {tools} --yes'
+        )
+        return subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=directory,
+        )
+
+    npx = shutil.which("npx")
+    if npx is None:
+        raise RuntimeError("npx not found")
     command = [
-        _npx_command(),
+        npx,
         "--yes",
-        _npm_package_spec(),
+        package,
         "install",
         "--directory",
-        str(project_dir),
+        directory,
         "--modules",
         modules,
         "--tools",
@@ -304,7 +324,30 @@ def _run_bmad_installer(project_dir: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        cwd=directory,
     )
+
+
+def _extract_installer_error(result: subprocess.CompletedProcess[str]) -> str:
+    chunks = [result.stderr.strip(), result.stdout.strip()]
+    text = "\n".join(chunk for chunk in chunks if chunk)
+    if not text:
+        return "BMAD installer failed"
+
+    lowered = text.lower()
+    if "invalid or unexpected token" in lowered or "unexpected token" in lowered:
+        return (
+            f"{text}\n"
+            "Hint: broken Node/npm on Windows is a common cause. "
+            "Reinstall Node.js 20 LTS (nodejs.org) or update nvm-windows to 1.1.11+, "
+            "then run 'nvm uninstall <version>' and 'nvm install <version>' in an "
+            "Administrator PowerShell. Verify with: node -v && npm -v && npx --yes bmad-method --version"
+        )
+    return text
+
+
+def _npx_available() -> bool:
+    return shutil.which("npx") is not None
 
 
 def _npm_package_spec() -> str:
@@ -313,10 +356,6 @@ def _npm_package_spec() -> str:
     if channel == "next":
         return f"{package}@next"
     return package
-
-
-def _npx_command() -> str:
-    return "npx.cmd" if sys.platform == "win32" else "npx"
 
 
 def _resolve_project_dir(bmad_dir: Path, project_dir: str | Path | None) -> Path:

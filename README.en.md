@@ -335,6 +335,7 @@ ralph completions bash|zsh|fish
 | `No sprint plan found` | Run BMAD sprint planning first; ensure `_bmad-output/implementation-artifacts/sprint-status.yaml` exists |
 | `claude: command not found` | Install Claude Code CLI or set `RALPH_CLAUDE_BIN` |
 | BMAD layout validation failed | Do not use the BMAD-METHOD source repo as a submodule in `_bmad/`; run `npx bmad-method install --directory . --modules bmm,tea --tools claude-code --yes` |
+| `npm error Invalid or unexpected token` | Usually a broken Node/npm install on Windows (common with older nvm-windows). Reinstall [Node 20 LTS](https://nodejs.org), or upgrade nvm-windows to 1.1.11+ and run `nvm uninstall <ver>` then `nvm install <ver>` in an **Administrator** PowerShell; verify with `node -v` and `npm -v` before `ralph init` |
 | Node.js missing | Install Node 20+, then re-run `ralph init` |
 | Daemon already running | Run `ralph stop` before `ralph start` |
 | Story failed | `ralph diagnose <ID>` for report; fix and `ralph retry <ID>` |
