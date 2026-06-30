@@ -702,6 +702,7 @@ ralph completions bash|zsh|fish
 | Worker 卡住 / 无输出 | 设置 `RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"` |
 | BMAD 布局校验失败 | 勿将 BMAD-METHOD 源码仓库作为 submodule 放入 `_bmad/`；运行 `npx bmad-method install --directory . --modules bmm,tea --tools claude-code --yes` |
 | `npm error Invalid or unexpected token` | 多为 Windows 上 Node/npm 安装损坏（常见于旧版 nvm-windows）。重装 [Node 20 LTS](https://nodejs.org)，或升级 nvm-windows 至 1.1.11+ 后以**管理员** PowerShell 执行 `nvm uninstall <版本>` 再 `nvm install <版本>`；用 `node -v`、`npm -v` 验证后再 `ralph init` |
+| BMAD 技能 `resolve_customization.py` 退出码 49 / `python3` 找不到 | Windows 上 `python` 可用但 `python3` 指向 `WindowsApps\python3.exe`（Microsoft Store 占位符）。**设置 → 应用 → 高级应用设置 → 应用执行别名**，关闭 `python.exe` 与 `python3.exe`；或手动执行：`python _bmad\scripts\resolve_customization.py --skill ".claude\skills\bmad-create-epics-and-stories" --key workflow`（将路径换成你的项目目录） |
 | 缺少 Node.js | 安装 Node 20+ 后重新 `ralph init` |
 | Daemon 已在运行 | 使用 `ralph stop` 后再 `ralph start` |
 | Story 失败 | `ralph diagnose <ID>` 查看报告，修复后 `ralph retry <ID>` |
