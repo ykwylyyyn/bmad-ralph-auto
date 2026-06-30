@@ -17,7 +17,7 @@ These steps are run once during project setup. Current status for bmad-ralph:
 | 3 | CE | `/bmad-bmm-create-epics-and-stories` | REQUIRED | John (SM) | [x] Done |
 | 4 | TF | `/bmad-tea-testarch-framework` | optional | Murat (TEA) | [x] Done |
 | 5 | IR | `/bmad-bmm-check-implementation-readiness` | REQUIRED | Winston (Architect) | [x] Done |
-| 6 | CI | `/bmad-tea-testarch-ci` | optional | Murat (TEA) | [ ] Pending |
+| 6 | CI | `/bmad-tea-testarch-ci` | optional | Murat (TEA) | [x] Done |
 
 ---
 
