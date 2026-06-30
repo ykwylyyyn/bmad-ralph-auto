@@ -40,9 +40,10 @@ ralph watch      # 实时终端 dashboard
 ralph diagnose   # 为失败 story 生成诊断报告
 ralph retry      # 将修正后的 story 重新送回流水线
 ralph init       # 在项目中初始化 Ralph
+ralph completions bash|zsh|fish
 ```
 
-当前 Python 命令是可运行的功能 stub，与现有 CLI 契约保持一致。
+当前 Python CLI 已包含配置解析、项目初始化、shell completion 生成，以及 daemon/runtime 命令的可运行 stub。
 
 ## 开发状态
 
@@ -55,6 +56,8 @@ ralph init       # 在项目中初始化 Ralph
 - 从 TOML 加载配置
 - Claude 进程抽象和输出解析器
 - 覆盖 CLI、配置、common 模型/schema、worker 输出解析的 Python 回归测试
+- 三层配置优先级：CLI 覆盖项、项目 TOML、用户 TOML、默认值
+- `ralph init` 项目脚手架和 `ralph completions` 生成
 
 ## 构建与测试
 

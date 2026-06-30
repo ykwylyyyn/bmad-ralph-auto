@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import contextlib
 from io import StringIO
+from pathlib import Path
+import tempfile
 import unittest
 
-from ralph.cli import main
+from ralph.cli import generate_completion, main
 
 
 class CliTests(unittest.TestCase):
@@ -21,7 +23,7 @@ class CliTests(unittest.TestCase):
     def test_help_shows_subcommands(self) -> None:
         code, stdout, _stderr = self.run_cli("--help")
         self.assertEqual(code, 0)
-        for subcommand in ["start", "stop", "status", "diagnose", "retry", "init", "watch"]:
+        for subcommand in ["start", "stop", "status", "diagnose", "retry", "init", "watch", "completions"]:
             self.assertIn(subcommand, stdout)
 
     def test_version(self) -> None:
@@ -30,7 +32,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("ralph 0.1.0", stdout)
 
     def test_subcommands_run(self) -> None:
-        for subcommand in ["start", "stop", "status", "init", "watch"]:
+        for subcommand in ["start", "stop", "status", "watch"]:
             with self.subTest(subcommand=subcommand):
                 code, stdout, _stderr = self.run_cli(subcommand)
                 self.assertEqual(code, 0)
@@ -45,6 +47,37 @@ class CliTests(unittest.TestCase):
         code, stdout, _stderr = self.run_cli("retry", "7")
         self.assertEqual(code, 0)
         self.assertIn("story 7", stdout)
+
+    def test_init_creates_config_and_runtime_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            code, stdout, _stderr = self.run_cli("init", "--project-dir", tmp)
+            root = Path(tmp)
+
+            self.assertEqual(code, 0)
+            self.assertIn("init: created", stdout)
+            self.assertTrue((root / "ralph.toml").exists())
+            self.assertTrue((root / ".ralph" / "logs").is_dir())
+            self.assertTrue((root / ".ralph" / "worktrees").is_dir())
+
+    def test_init_keeps_existing_config_without_force(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "ralph.toml"
+            config_path.write_text("max_workers = 9\n", encoding="utf-8")
+
+            code, stdout, _stderr = self.run_cli("init", "--project-dir", tmp)
+
+            self.assertEqual(code, 0)
+            self.assertIn("init: kept", stdout)
+            self.assertEqual(config_path.read_text(encoding="utf-8"), "max_workers = 9\n")
+
+    def test_completions_generates_shell_script(self) -> None:
+        code, stdout, _stderr = self.run_cli("completions", "bash")
+        self.assertEqual(code, 0)
+        self.assertIn("complete -F _ralph_complete ralph", stdout)
+
+    def test_generate_completion_rejects_unknown_shell(self) -> None:
+        with self.assertRaises(ValueError):
+            generate_completion("unknown")
 
 
 if __name__ == "__main__":

@@ -40,9 +40,10 @@ ralph watch      # Live terminal dashboard
 ralph diagnose   # Diagnostic report for failed stories
 ralph retry      # Re-feed corrected stories into pipeline
 ralph init       # Initialize Ralph on a project
+ralph completions bash|zsh|fish
 ```
 
-Current Python commands are functional stubs matching the existing CLI contract.
+The Python CLI currently includes config resolution, project initialization, shell completion generation, and functional stubs for daemon/runtime commands.
 
 ## Development Status
 
@@ -55,6 +56,8 @@ Current Python commands are functional stubs matching the existing CLI contract.
 - Config loading from TOML
 - Claude process abstraction and output parser
 - Python regression tests for CLI, config, common models/schema, and worker output parsing
+- Three-tier config precedence: CLI overrides, project TOML, user TOML, then defaults
+- `ralph init` project scaffolding and `ralph completions` generation
 
 ## Build And Test
 

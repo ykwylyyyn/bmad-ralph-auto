@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from pathlib import Path
 
 from . import __version__
+from .config import RalphConfig, default_project_config_path, default_user_config_path, resolve_config
+from .init_project import init_project
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -15,6 +18,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-color", action="store_true", help="Disable color output")
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress non-essential output")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show additional detail")
+    parser.add_argument("--config", type=Path, help="Project config path")
+    parser.add_argument("--user-config", type=Path, help="User config path")
+    parser.add_argument("--max-workers", type=_positive_int, help="Override configured worker limit")
 
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
 
@@ -45,6 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
     retry.set_defaults(handler=_run_retry)
 
     init = subcommands.add_parser("init", help="Initialize Ralph on a project", description="Initialize Ralph on a project")
+    init.add_argument("--project-dir", type=Path, default=Path.cwd(), help="Project directory to initialize")
+    init.add_argument("--force", action="store_true", help="Overwrite existing ralph.toml")
     init.set_defaults(handler=_run_init)
 
     watch = subcommands.add_parser(
@@ -53,6 +61,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Live TUI monitoring dashboard",
     )
     watch.set_defaults(handler=_run_watch)
+
+    completions = subcommands.add_parser(
+        "completions",
+        help="Generate shell completions",
+        description="Generate shell completions",
+    )
+    completions.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell to generate completions for")
+    completions.set_defaults(handler=_run_completions)
 
     return parser
 
@@ -69,17 +85,33 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _story_id(value: str) -> int:
+    return _positive_int(value, label="STORY_ID")
+
+
+def _positive_int(value: str, *, label: str = "value") -> int:
     try:
         parsed = int(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("invalid value: expected numeric STORY_ID") from exc
+        raise argparse.ArgumentTypeError(f"invalid value: expected numeric {label}") from exc
     if parsed < 1:
-        raise argparse.ArgumentTypeError("invalid value: STORY_ID must be positive")
+        raise argparse.ArgumentTypeError(f"invalid value: {label} must be positive")
     return parsed
 
 
-def _run_start(_args: argparse.Namespace) -> None:
-    print("start: not yet implemented")
+def _resolved_config(args: argparse.Namespace) -> RalphConfig:
+    project_config = args.config or default_project_config_path()
+    user_config = args.user_config or default_user_config_path()
+    overrides = RalphConfig(max_workers=args.max_workers)
+    return resolve_config(
+        user_config_path=user_config,
+        project_config_path=project_config,
+        overrides=overrides,
+    )
+
+
+def _run_start(args: argparse.Namespace) -> None:
+    config = _resolved_config(args)
+    print(f"start: not yet implemented (max_workers={config.max_workers})")
 
 
 def _run_stop(_args: argparse.Namespace) -> None:
@@ -87,8 +119,9 @@ def _run_stop(_args: argparse.Namespace) -> None:
 
 
 def _run_status(args: argparse.Namespace) -> None:
+    config = _resolved_config(args)
     suffix = " with detail" if args.detail else ""
-    print(f"status: not yet implemented{suffix}")
+    print(f"status: not yet implemented{suffix} (max_workers={config.max_workers})")
 
 
 def _run_diagnose(args: argparse.Namespace) -> None:
@@ -99,9 +132,34 @@ def _run_retry(args: argparse.Namespace) -> None:
     print(f"retry: not yet implemented for story {args.story_id}")
 
 
-def _run_init(_args: argparse.Namespace) -> None:
-    print("init: not yet implemented")
+def _run_init(args: argparse.Namespace) -> None:
+    max_workers = args.max_workers or 5
+    result = init_project(args.project_dir, max_workers=max_workers, force=args.force)
+    action = "created" if result.created_config else "kept"
+    print(f"init: {action} {result.config_path}")
+    print(f"init: ready {result.runtime_dir}")
 
 
 def _run_watch(_args: argparse.Namespace) -> None:
     print("watch: not yet implemented")
+
+
+def _run_completions(args: argparse.Namespace) -> None:
+    print(generate_completion(args.shell))
+
+
+def generate_completion(shell: str) -> str:
+    commands = "start stop status diagnose retry init watch completions"
+    if shell == "bash":
+        return f"""_ralph_complete()
+{{
+    local cur="${{COMP_WORDS[COMP_CWORD]}}"
+    COMPREPLY=( $(compgen -W "{commands}" -- "$cur") )
+}}
+complete -F _ralph_complete ralph"""
+    if shell == "zsh":
+        return f"""#compdef ralph
+_arguments '1:command:({commands})'"""
+    if shell == "fish":
+        return "\n".join(f"complete -c ralph -f -a {command}" for command in commands.split())
+    raise ValueError(f"unsupported shell: {shell}")

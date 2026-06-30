@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from ralph.config import RalphConfig, load_config
+from ralph.config import RalphConfig, load_config, render_config, resolve_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -19,6 +19,33 @@ class ConfigTests(unittest.TestCase):
             path = Path(tmp) / "ralph.toml"
             path.write_text("max_workers = 3", encoding="utf-8")
             self.assertEqual(load_config(path).max_workers, 3)
+
+    def test_resolve_config_uses_default_when_files_are_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.toml"
+            self.assertEqual(
+                resolve_config(user_config_path=missing, project_config_path=missing).max_workers,
+                5,
+            )
+
+    def test_resolve_config_precedence_is_cli_project_user_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            user_config = root / "user.toml"
+            project_config = root / "project.toml"
+            user_config.write_text("max_workers = 2", encoding="utf-8")
+            project_config.write_text("max_workers = 4", encoding="utf-8")
+
+            resolved = resolve_config(
+                user_config_path=user_config,
+                project_config_path=project_config,
+                overrides=RalphConfig(max_workers=8),
+            )
+
+            self.assertEqual(resolved.max_workers, 8)
+
+    def test_render_config_writes_toml(self) -> None:
+        self.assertEqual(render_config(RalphConfig(max_workers=6)), "max_workers = 6\n")
 
 
 if __name__ == "__main__":
