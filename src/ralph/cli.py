@@ -23,6 +23,7 @@ from .diagnose import (
 )
 from .retry import RetryError, RetryErrorKind, render_retry_confirmation, retry_story
 from .status import load_status_snapshot, render_status
+from .watch import run_watch
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,6 +82,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Live TUI monitoring dashboard",
         description="Live TUI monitoring dashboard",
     )
+    _add_project_dir_arg(watch)
+    watch.add_argument("--detail", action="store_true", help="Show story and worker details")
+    watch.add_argument(
+        "--refresh",
+        type=_positive_float,
+        default=2.0,
+        help="Refresh interval in seconds (default: 2)",
+    )
     watch.set_defaults(handler=_run_watch)
 
     completions = subcommands.add_parser(
@@ -121,6 +130,16 @@ def _positive_int(value: str, *, label: str = "value") -> int:
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"invalid value: expected numeric {label}") from exc
     if parsed < 1:
+        raise argparse.ArgumentTypeError(f"invalid value: {label} must be positive")
+    return parsed
+
+
+def _positive_float(value: str, *, label: str = "value") -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid value: expected numeric {label}") from exc
+    if parsed <= 0:
         raise argparse.ArgumentTypeError(f"invalid value: {label} must be positive")
     return parsed
 
@@ -328,8 +347,16 @@ def _bmad_update_hint() -> str:
     return submodule_update_hint()
 
 
-def _run_watch(_args: argparse.Namespace) -> None:
-    print("watch: not yet implemented")
+def _run_watch(args: argparse.Namespace) -> None:
+    project_dir = getattr(args, "project_dir", Path.cwd())
+    result = run_watch(
+        project_dir,
+        theme=args.theme,
+        detail=args.detail,
+        refresh_secs=args.refresh,
+    )
+    if result is None:
+        raise SystemExit(1)
 
 
 def _run_completions(args: argparse.Namespace) -> None:
