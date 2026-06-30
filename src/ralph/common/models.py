@@ -57,6 +57,8 @@ class Story:
     state: StoryState = StoryState.QUEUED
     dependencies: list[int] = field(default_factory=list)
     worker_id: int | None = None
+    key: str = ""
+    acceptance_criteria: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

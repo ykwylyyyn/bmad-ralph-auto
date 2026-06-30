@@ -8,11 +8,21 @@ PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS stories (
     id INTEGER PRIMARY KEY,
+    story_key TEXT,
     title TEXT NOT NULL,
     state TEXT NOT NULL,
     worker_id INTEGER,
+    acceptance_criteria TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS story_dependencies (
+    story_id INTEGER NOT NULL,
+    depends_on_id INTEGER NOT NULL,
+    PRIMARY KEY (story_id, depends_on_id),
+    FOREIGN KEY(story_id) REFERENCES stories(id),
+    FOREIGN KEY(depends_on_id) REFERENCES stories(id)
 );
 
 CREATE TABLE IF NOT EXISTS workers (

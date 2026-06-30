@@ -9,6 +9,8 @@ from .common.protocol import Request
 from .config import RalphConfig, default_project_config_path, default_user_config_path, resolve_config
 from .daemon import RuntimePaths, read_status, request_daemon, run_daemon, start_daemon, stop_daemon
 from .init_project import init_project
+from .pipeline.artifact import ArtifactParseError, SprintPlanNotFoundError
+from .pipeline.ingestion import ingest_sprint_plan, persist_ingested_plan
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -127,7 +129,33 @@ def _resolved_config(args: argparse.Namespace) -> RalphConfig:
 def _run_start(args: argparse.Namespace) -> None:
     config = _resolved_config(args)
     init_project(args.project_dir, max_workers=config.max_workers or 5)
+    try:
+        ingestion = ingest_sprint_plan(args.project_dir)
+    except SprintPlanNotFoundError as exc:
+        print("Error: No sprint plan found in project")
+        print("  Ralph looks for sprint plans in _bmad-output/implementation-artifacts/")
+        print(f"  {exc.guidance}")
+        raise SystemExit(1) from exc
+    except ArtifactParseError as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from exc
+
+    paths = RuntimePaths(args.project_dir.resolve())
+    paths.ensure()
+    from ralph.common.db import StateStore
+
+    store = StateStore.open(paths.database_file)
+    try:
+        persist_ingested_plan(store, ingestion)
+    finally:
+        store.close()
+
     status = start_daemon(args.project_dir, config)
+    print(
+        "start: "
+        f"found sprint plan with {ingestion.story_count} stories, "
+        f"{ingestion.dependency_count} dependencies mapped"
+    )
     print(f"start: {status.state} pid={status.pid} max_workers={status.max_workers}")
 
 

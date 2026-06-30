@@ -54,7 +54,7 @@ development_status:
   2-1-daemon-process-lifecycle-signal-handling: done
   2-2-unix-domain-socket-ipc: done
   2-3-sqlite-state-persistence-layer: done
-  2-4-bmad-artifact-parsing-sprint-plan-ingestion: backlog
+  2-4-bmad-artifact-parsing-sprint-plan-ingestion: done
   2-5-pipeline-state-machine-story-scheduler: backlog
   2-6-worker-spawning-git-worktree-isolation: backlog
   2-7-worker-health-monitoring-lifecycle-management: backlog

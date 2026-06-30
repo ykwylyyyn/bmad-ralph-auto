@@ -77,20 +77,34 @@ class CliTests(unittest.TestCase):
 
     def test_start_status_stop_use_daemon_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifacts = root / "_bmad-output" / "implementation-artifacts"
+            artifacts.mkdir(parents=True)
+            (artifacts / "sprint-status.yaml").write_text(
+                "story_location: _bmad-output/implementation-artifacts\n"
+                "development_status:\n"
+                "  1-1-demo-story: backlog\n",
+                encoding="utf-8",
+            )
+            (artifacts / "1-1-demo-story.md").write_text(
+                "# Story 1.1: Demo Story\n\n## Acceptance Criteria\n\n1. demo",
+                encoding="utf-8",
+            )
             try:
-                code, stdout, _stderr = self.run_cli("start", "--project-dir", tmp)
+                code, stdout, _stderr = self.run_cli("start", "--project-dir", str(root))
                 self.assertEqual(code, 0)
-                self.assertIn("start: running", stdout)
+                self.assertIn("found sprint plan", stdout)
+                self.assertTrue("start: running" in stdout or "start: starting" in stdout)
 
-                code, stdout, _stderr = self.run_cli("status", "--project-dir", tmp, "--detail")
+                code, stdout, _stderr = self.run_cli("status", "--project-dir", str(root), "--detail")
                 self.assertEqual(code, 0)
                 self.assertIn("status: running with detail", stdout)
 
-                code, stdout, _stderr = self.run_cli("stop", "--project-dir", tmp)
+                code, stdout, _stderr = self.run_cli("stop", "--project-dir", str(root))
                 self.assertEqual(code, 0)
                 self.assertIn("stop: stopped", stdout)
             finally:
-                self.run_cli("stop", "--project-dir", tmp)
+                self.run_cli("stop", "--project-dir", str(root))
 
     def test_generate_completion_rejects_unknown_shell(self) -> None:
         with self.assertRaises(ValueError):

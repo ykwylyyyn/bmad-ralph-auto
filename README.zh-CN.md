@@ -61,6 +61,7 @@ ralph completions bash|zsh|fish
 - 后台 daemon 进程生命周期：PID/status 文件、heartbeat、优雅停止和 SQLite schema 初始化
 - daemon `status` 和 `stop` 请求的 JSON IPC
 - SQLite 状态持久化层：原子 story 转换、崩溃恢复、WAL 并发读、healing 记录清理
+- BMAD artifact 解析与 sprint plan 摄入：`ralph start` 自动检测并加载 sprint-status.yaml
 
 ## 构建与测试
 
