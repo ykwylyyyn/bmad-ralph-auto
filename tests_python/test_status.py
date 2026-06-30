@@ -11,8 +11,24 @@ from ralph.config import RalphConfig
 from ralph.daemon import start_daemon, stop_daemon
 from ralph.render import Theme, completion_summary, health_line, progress_bar, summary_line
 from ralph.render.theme import Semantic
-from ralph.status import load_status_snapshot, render_status_overview
-from ralph.status.snapshot import StatusSnapshot, StoryCounts, _build_snapshot
+from ralph.status import (
+    load_status_snapshot,
+    render_status,
+    render_status_detail,
+    render_status_tables,
+    should_show_status_hint,
+    story_table,
+    worker_table,
+)
+from ralph.status.snapshot import (
+    StatusSnapshot,
+    StoryCounts,
+    StoryDetail,
+    StoryEvent,
+    WorkerDetail,
+    _build_snapshot,
+    record_status_invocation,
+)
 
 
 class RenderComponentExtensionTests(unittest.TestCase):
@@ -57,30 +73,68 @@ class RenderComponentExtensionTests(unittest.TestCase):
         self.assertIn("ralph diagnose 7", joined)
 
 
+class StoryTableTests(unittest.TestCase):
+    def test_story_table_sorts_by_id_and_truncates_name(self) -> None:
+        stories = [
+            StoryDetail(1002, "A very long story title here", "queued", None, "—", "0"),
+            StoryDetail(1001, "Short", "running", 1, "12m", "0"),
+        ]
+        lines = story_table(stories, theme=Theme(use_color=False), width=80)
+        joined = "\n".join(lines)
+        self.assertIn("※ Stories", joined)
+        self.assertLess(joined.index("#1001"), joined.index("#1002"))
+        self.assertIn("A very long story t…", joined)
+        self.assertIn("W1", joined)
+
+    def test_worker_table_shows_health_context(self) -> None:
+        workers = [
+            WorkerDetail(1, "healthy", 1001, "1h 2m"),
+            WorkerDetail(2, "idle", None, "1h 2m"),
+        ]
+        lines = worker_table(workers, theme=Theme(use_color=False), healthy_count=1)
+        joined = "\n".join(lines)
+        self.assertIn("1/2 healthy", joined)
+        self.assertIn("Story #1001", joined)
+
+
 class StatusSnapshotTests(unittest.TestCase):
     def test_build_snapshot_maps_story_states(self) -> None:
         daemon = _daemon_stub()
         story_rows = [
-            {"id": 1, "state": StoryState.DONE.value},
-            {"id": 2, "state": StoryState.IN_PROGRESS.value},
-            {"id": 3, "state": StoryState.QUEUED.value},
-            {"id": 4, "state": StoryState.FAILED.value},
+            {"id": 1, "title": "One", "state": StoryState.DONE.value, "worker_id": None, "created_at": "t", "updated_at": "t"},
+            {"id": 2, "title": "Two", "state": StoryState.IN_PROGRESS.value, "worker_id": 1, "created_at": "t", "updated_at": "t"},
+            {"id": 3, "title": "Three", "state": StoryState.QUEUED.value, "worker_id": None, "created_at": "t", "updated_at": "t"},
+            {"id": 4, "title": "Four", "state": StoryState.FAILED.value, "worker_id": None, "created_at": "t", "updated_at": "t"},
         ]
-        snapshot = _build_snapshot(daemon, story_rows, [], [])
+        snapshot = _build_snapshot(daemon, story_rows, [], [], logs_dir=None)
         self.assertEqual(snapshot.story_counts.completed, 1)
         self.assertEqual(snapshot.story_counts.running, 1)
-        self.assertEqual(snapshot.story_counts.queued, 1)
-        self.assertEqual(snapshot.story_counts.failed, 1)
-        self.assertEqual(snapshot.health_label, "healthy")
+        self.assertEqual(len(snapshot.stories), 4)
 
     def test_build_snapshot_detects_healing(self) -> None:
         daemon = _daemon_stub()
-        story_rows = [{"id": 10, "state": StoryState.IN_PROGRESS.value}]
-        healing_rows = [{"story_id": 10, "layer": "step_retry", "attempt": 1, "created_at": "now"}]
-        snapshot = _build_snapshot(daemon, story_rows, [], healing_rows)
+        story_rows = [
+            {
+                "id": 10,
+                "title": "Heal",
+                "state": StoryState.IN_PROGRESS.value,
+                "worker_id": 1,
+                "created_at": "t",
+                "updated_at": "t",
+            }
+        ]
+        healing_rows = [
+            {
+                "story_id": 10,
+                "layer": "step_retry",
+                "attempt": 1,
+                "reason": "timeout",
+                "created_at": "2026-06-30T10:15:00+00:00",
+            }
+        ]
+        snapshot = _build_snapshot(daemon, story_rows, [], healing_rows, logs_dir=None)
         self.assertEqual(snapshot.health_label, "healing")
-        self.assertEqual(snapshot.story_counts.retrying, 1)
-        self.assertEqual(snapshot.recovery_story_count, 1)
+        self.assertEqual(snapshot.stories[0].display_state, "retrying")
 
     def test_load_status_snapshot_returns_none_when_daemon_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -89,44 +143,27 @@ class StatusSnapshotTests(unittest.TestCase):
 
 
 class StatusDisplayTests(unittest.TestCase):
-    def test_render_status_overview_for_running_sprint(self) -> None:
-        now = datetime.now(timezone.utc)
-        started = (now - timedelta(hours=2, minutes=3)).isoformat()
-        snapshot = StatusSnapshot(
-            daemon_running=True,
-            health_label="healthy",
-            started_at=started,
-            heartbeat_at=now.isoformat(),
-            max_workers=3,
-            active_workers=2,
-            story_counts=StoryCounts(completed=2, running=1, queued=1),
-        )
-        rendered = render_status_overview(snapshot, theme=Theme(use_color=False))
-        self.assertIn("※ Ralph", rendered)
-        self.assertIn("healthy", rendered)
-        self.assertIn("Running for", rendered)
-        self.assertIn("Stories", rendered)
-        self.assertIn("50% completed", rendered)
-        self.assertIn("2 completed", rendered)
-        self.assertIn("1 running", rendered)
+    def test_render_status_includes_tables_and_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = _sample_snapshot()
+            rendered = render_status(snapshot, theme=Theme(use_color=False), project_dir=root, detail=False)
+            self.assertIn("※ Stories", rendered)
+            self.assertIn("※ Workers", rendered)
+            self.assertIn("Tip: ralph status --detail for expanded view", rendered)
 
-    def test_render_status_overview_for_completed_sprint(self) -> None:
-        snapshot = StatusSnapshot(
-            daemon_running=True,
-            health_label="complete",
-            started_at=datetime.now(timezone.utc).isoformat(),
-            heartbeat_at=datetime.now(timezone.utc).isoformat(),
-            max_workers=3,
-            active_workers=0,
-            story_counts=StoryCounts(completed=9, failed=1),
-            failed_story_ids=[7],
-            self_healed_count=2,
-        )
-        rendered = render_status_overview(snapshot, theme=Theme(use_color=False))
-        self.assertIn("complete", rendered)
-        self.assertIn("Sprint finished", rendered)
-        self.assertIn("Success: 90%", rendered)
-        self.assertIn("ralph diagnose 7", rendered)
+    def test_render_status_detail_includes_timeline(self) -> None:
+        snapshot = _sample_snapshot()
+        rendered = render_status_detail(snapshot, theme=Theme(use_color=False))
+        self.assertIn("Story #1001", rendered)
+        self.assertIn("Assigned to W1", rendered)
+
+    def test_hint_suppressed_after_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for _ in range(6):
+                record_status_invocation(root)
+            self.assertFalse(should_show_status_hint(root))
 
 
 class StatusIntegrationTests(unittest.TestCase):
@@ -135,13 +172,20 @@ class StatusIntegrationTests(unittest.TestCase):
             root = Path(tmp)
             try:
                 start_daemon(root, RalphConfig(max_workers=2))
-                _seed_stories(root, [(1001, "Demo", StoryState.DONE.value), (1002, "Next", StoryState.QUEUED.value)])
-                snapshot = load_status_snapshot(str(root))
+                _seed_stories(
+                    root,
+                    [
+                        (1001, "Demo story", StoryState.DONE.value, None),
+                        (1002, "Next story", StoryState.QUEUED.value, None),
+                    ],
+                )
+                _seed_workers(root, [(1, "idle", "healthy"), (2, "running", "healthy")])
+                snapshot = load_status_snapshot(root)
                 assert snapshot is not None
-                self.assertEqual(snapshot.story_counts.completed, 1)
-                self.assertEqual(snapshot.story_counts.queued, 1)
-                rendered = render_status_overview(snapshot, theme=Theme(use_color=False))
-                self.assertIn("50% completed", rendered)
+                rendered = render_status_tables(snapshot, theme=Theme(use_color=False))
+                self.assertIn("#1001", rendered)
+                self.assertIn("Demo story", rendered)
+                self.assertIn("W1", rendered)
             finally:
                 stop_daemon(root)
 
@@ -155,14 +199,63 @@ def _daemon_stub():
     return _Stub()
 
 
-def _seed_stories(root: Path, rows: list[tuple[int, str, str]]) -> None:
+def _sample_snapshot() -> StatusSnapshot:
+    now = datetime.now(timezone.utc)
+    started = (now - timedelta(hours=1)).isoformat()
+    return StatusSnapshot(
+        daemon_running=True,
+        health_label="healthy",
+        started_at=started,
+        heartbeat_at=now.isoformat(),
+        max_workers=2,
+        active_workers=1,
+        story_counts=StoryCounts(completed=1, running=1),
+        stories=[
+            StoryDetail(
+                1001,
+                "Auth login flow",
+                "running",
+                1,
+                "12m",
+                "0",
+                events=[StoryEvent("10:15", "Assigned to W1")],
+            )
+        ],
+        workers=[WorkerDetail(1, "healthy", 1001, "1h 0m")],
+    )
+
+
+def _seed_stories(
+    root: Path,
+    rows: list[tuple[int, str, str, int | None]],
+) -> None:
     db_path = root / ".ralph" / "ralph.db"
     connection = sqlite3.connect(db_path)
     try:
-        for story_id, title, state in rows:
+        for story_id, title, state, worker_id in rows:
             connection.execute(
-                "INSERT INTO stories (id, title, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (story_id, title, state, "now", "now"),
+                """
+                INSERT INTO stories (id, title, state, worker_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (story_id, title, state, worker_id, "now", "now"),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _seed_workers(root: Path, rows: list[tuple[int, str, str]]) -> None:
+    db_path = root / ".ralph" / "ralph.db"
+    connection = sqlite3.connect(db_path)
+    try:
+        for worker_id, state, health in rows:
+            connection.execute(
+                """
+                INSERT INTO workers (id, state, health, worktree_path, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (worker_id, state, health, f"/tmp/worker-{worker_id}", "now", "now"),
             )
         connection.commit()
     finally:

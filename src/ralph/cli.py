@@ -11,7 +11,7 @@ from .daemon import RuntimePaths, read_status, request_daemon, run_daemon, start
 from .init_project import init_project
 from .render import Spinner, error_message, resolve_theme, section_border
 from .render.theme import Semantic
-from .status import load_status_snapshot, render_status_overview
+from .status import load_status_snapshot, render_status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -165,8 +165,7 @@ def _run_stop(args: argparse.Namespace) -> None:
 
 def _run_status(args: argparse.Namespace) -> None:
     paths = RuntimePaths(args.project_dir.resolve())
-    response = request_daemon(paths, Request(type="status"), timeout_secs=1.0)
-    snapshot = load_status_snapshot(str(paths.project_dir))
+    snapshot = load_status_snapshot(paths.project_dir, detail=args.detail)
     if snapshot is None:
         print(
             error_message(
@@ -177,11 +176,14 @@ def _run_status(args: argparse.Namespace) -> None:
         )
         raise SystemExit(1)
 
-    print(render_status_overview(snapshot, theme=args.theme))
-    if args.detail:
-        detail_message = response.message if response.type == "ok" else snapshot.health_label
-        if detail_message:
-            print(f"  {args.theme.dim(detail_message)}")
+    print(
+        render_status(
+            snapshot,
+            theme=args.theme,
+            project_dir=paths.project_dir,
+            detail=args.detail,
+        )
+    )
 
 
 def _run_diagnose(args: argparse.Namespace) -> None:

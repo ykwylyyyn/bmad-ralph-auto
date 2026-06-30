@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from ralph.render.components import (
     completion_summary,
     health_line,
@@ -10,7 +12,14 @@ from ralph.render.components import (
 from ralph.render.theme import Semantic, Theme
 from ralph.render.timefmt import format_duration_between
 
-from .snapshot import StatusSnapshot
+from .snapshot import StatusSnapshot, should_show_status_hint
+from .tables import (
+    hint_line,
+    story_detail_sections,
+    story_table,
+    worker_detail_sections,
+    worker_table,
+)
 
 
 def render_status_overview(snapshot: StatusSnapshot, *, theme: Theme) -> str:
@@ -49,6 +58,56 @@ def render_status_overview(snapshot: StatusSnapshot, *, theme: Theme) -> str:
         )
 
     return "\n".join(lines)
+
+
+def render_status_tables(snapshot: StatusSnapshot, *, theme: Theme) -> str:
+    lines: list[str] = []
+    if snapshot.stories:
+        lines.extend(story_table(snapshot.stories, theme=theme))
+    if snapshot.workers:
+        if lines:
+            lines.append("")
+        lines.extend(
+            worker_table(
+                snapshot.workers,
+                theme=theme,
+                healthy_count=snapshot.healthy_worker_count,
+            )
+        )
+    return "\n".join(lines)
+
+
+def render_status_detail(snapshot: StatusSnapshot, *, theme: Theme) -> str:
+    lines: list[str] = []
+    story_sections = story_detail_sections(snapshot.stories, theme=theme)
+    worker_sections = worker_detail_sections(snapshot.workers, theme=theme)
+    if story_sections:
+        lines.extend(story_sections)
+    if worker_sections:
+        if lines:
+            lines.append("")
+        lines.extend(worker_sections)
+    return "\n".join(lines)
+
+
+def render_status(
+    snapshot: StatusSnapshot,
+    *,
+    theme: Theme,
+    project_dir: str | Path,
+    detail: bool = False,
+) -> str:
+    sections = [render_status_overview(snapshot, theme=theme)]
+    tables = render_status_tables(snapshot, theme=theme)
+    if tables:
+        sections.append(tables)
+    if detail:
+        detail_output = render_status_detail(snapshot, theme=theme)
+        if detail_output:
+            sections.append(detail_output)
+    if should_show_status_hint(project_dir) and not detail:
+        sections.append(hint_line("ralph status --detail for expanded view", theme=theme))
+    return "\n\n".join(section for section in sections if section)
 
 
 def _health_semantic(label: str) -> Semantic:
