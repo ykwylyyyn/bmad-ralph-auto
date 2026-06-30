@@ -1,5 +1,7 @@
 # BMAD Workflow Execution Sequence
 
+[中文](WORKFLOW.zh-CN.md) | English
+
 This document interleaves **BMM** (BMAD Method Manager) and **TEA** (Test Engineering Agent) slash commands in the correct execution order for the bmad-ralph project.
 
 > **Important**: Each slash command should be run in a **fresh Claude Code context window** to avoid context pollution between steps.

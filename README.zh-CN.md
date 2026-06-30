@@ -81,7 +81,7 @@ npx --yes bmad-method install --directory . --modules bmm,tea --tools claude-cod
 
 ### 2. 使用 BMAD 生成 Sprint Plan
 
-在 Claude Code 中按 [WORKFLOW.md](WORKFLOW.md) 执行 BMAD 工作流。每个 sprint 至少需要：
+在 Claude Code 中按 [WORKFLOW.zh-CN.md](WORKFLOW.zh-CN.md)（或 [WORKFLOW.md](WORKFLOW.md)）执行 BMAD 工作流。每个 sprint 至少需要：
 
 1. **Sprint Planning**（`/bmad-bmm-sprint-planning`）— 生成 `sprint-status.yaml`
 2. **Create Story**（`/bmad-bmm-create-story`）— 为每个 story 生成实现规格
@@ -129,6 +129,185 @@ ralph diagnose [STORY_ID] # 失败 story 的诊断报告
 ralph retry STORY_ID      # 将修正后的 story 重新送入流水线
 ralph stop                # 优雅停止 daemon
 ```
+
+## 完整开发示例：用户管理系统
+
+以下示例演示如何用 **BMAD + Ralph** 从零开发一个「用户管理系统」（注册、登录、资料管理、权限）。假设技术栈为 **Python FastAPI + SQLite + JWT**，你可按实际栈替换。
+
+> 详细工作流说明见 [WORKFLOW.zh-CN.md](WORKFLOW.zh-CN.md)。每个 BMAD 步骤在 **新的 Claude Code 窗口** 中执行。
+
+### 第 0 步：环境与项目初始化
+
+```powershell
+# 1. 安装 Ralph（在 bmad-ralph-auto 仓库中，见上文「安装」）
+pip install -e .
+
+# 2. 创建业务项目
+mkdir D:\project\user-mgmt
+cd D:\project\user-mgmt
+git init
+
+# 3. 初始化 Ralph + BMAD
+ralph init
+```
+
+初始化后目录应包含 `ralph.toml`、`_bmad/`、`.claude/skills/bmad-sprint-planning` 等。
+
+### 第 1 步：一次性规划（Phase 3）
+
+在 Claude Code 中**按顺序**执行（每个命令开新窗口）：
+
+| 顺序 | 在 Claude Code 中输入 | 目的 | 主要产物 |
+|------|----------------------|------|----------|
+| 1 | `bmad-help` 或 `/bmad-bmm-create-prd` | 明确产品需求 | `_bmad-output/planning-artifacts/prd.md` |
+| 2 | `/bmad-bmm-create-architecture` | 技术架构（FastAPI、SQLite、JWT） | `architecture.md` |
+| 3 | `/bmad-bmm-create-epics-and-stories` | 拆分 Epic | `epics.md` |
+| 4 | `/bmad-tea-testarch-test-design` | 测试策略（可选） | `test-design-qa.md` |
+| 5 | `/bmad-bmm-check-implementation-readiness` | 实现就绪检查 | 就绪报告 |
+| 6 | `/bmad-tea-testarch-ci` | CI 流水线（可选） | `.github/workflows/ci.yml` |
+
+**Epic 划分示例**（由步骤 3 产出，供参考）：
+
+| Epic | 范围 |
+|------|------|
+| Epic 1 | 用户模型与认证（注册、登录、JWT） |
+| Epic 2 | 用户资料 CRUD |
+| Epic 3 | 角色与权限（RBAC） |
+| Epic 4 | API 文档与运维监控 |
+
+### 第 2 步：Sprint 规划（Phase 4）
+
+```
+/bmad-bmm-sprint-planning
+```
+
+告诉 SM：本 Sprint 聚焦 **Epic 1 — 用户模型与认证**，包含以下 Story：
+
+| Story Key | 标题 | 依赖 |
+|-----------|------|------|
+| `1-1-user-model-and-schema` | 用户模型与数据库 Schema | 无 |
+| `1-2-user-registration-api` | 用户注册 API | 1-1 |
+| `1-3-user-login-and-jwt` | 登录与 JWT 签发 | 1-1 |
+| `1-4-password-reset-flow` | 密码重置流程 | 1-2, 1-3 |
+
+**生成的 `sprint-status.yaml` 示例**：
+
+```yaml
+development_status:
+  epic-1: in-progress
+  1-1-user-model-and-schema: backlog
+  1-2-user-registration-api: backlog
+  1-3-user-login-and-jwt: backlog
+  1-4-password-reset-flow: backlog
+  epic-1-retrospective: optional
+```
+
+### 第 3 步：单个 Story 的 9 步循环（以 Story 1-1 为例）
+
+对 **每一个** Story 重复以下流程（详见 [WORKFLOW.zh-CN.md](WORKFLOW.zh-CN.md)）：
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  Story 1-1: 用户模型与数据库 Schema                            │
+├─────────────────────────────────────────────────────────────┤
+│  1. /bmad-bmm-create-story        → 1-1-user-model....md    │
+│  2. /bmad-bmm-create-story (校验)  → 校验 Story 规格          │
+│  3. /bmad-tea-testarch-atdd       → atdd-checklist-1-1.md   │
+│  4. /bmad-bmm-dev-story           → 实现 models + migration │
+│  5. /bmad-bmm-qa-generate-e2e-tests → 补充 E2E 测试          │
+│  6. /bmad-bmm-code-review         → 代码评审（不通过则回 4）   │
+│  7. /bmad-tea-testarch-test-review → 测试质量评分             │
+│  8. /bmad-tea-testarch-nfr        → 安全/NFR（密码哈希等）     │
+│  9. /bmad-tea-testarch-trace       → 追溯矩阵 + 门禁 Pass     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Story 1-1 验收标准示例**（写入 story 文件）：
+
+- 定义 `User` 模型：`id`、`email`（唯一）、`password_hash`、`created_at`
+- 提供 SQLite schema / migration
+- 密码不得以明文存储
+- 单元测试覆盖模型创建与唯一约束
+
+**步骤 4 完成后本地验证**：
+
+```bash
+pytest tests/ -v
+# 或项目 Makefile
+make test-all
+```
+
+**Story 完成后更新 sprint 状态**：
+
+```yaml
+1-1-user-model-and-schema: done
+1-2-user-registration-api: ready-for-dev
+```
+
+对其余 Story（1-2、1-3、1-4）重复相同 9 步循环。
+
+### 第 4 步：启动 Ralph 自主执行（可选自动化）
+
+当 Story 规格与 `sprint-status.yaml` 就绪后，可用 Ralph **并行调度** worker 执行 backlog 中的 Story：
+
+```powershell
+cd D:\project\user-mgmt
+
+# 确保 Claude Code CLI 可用
+claude --version
+
+# 启动流水线（自动摄入 sprint plan）
+ralph start
+
+# 实时监控
+ralph watch --detail
+```
+
+**Ralph 执行时会发生什么**：
+
+```text
+sprint-status.yaml
+    │
+    ├─► Story 1-1（无依赖）──► Worker A @ worktree-A ──► claude 执行 dev-story
+    ├─► Story 1-2（依赖 1-1）── 等待 1-1 Done 后调度
+    └─► Story 1-3（依赖 1-1）── 可与 1-2 并行（若 max_workers ≥ 2）
+```
+
+**常用运维命令**：
+
+```powershell
+ralph status --detail          # 查看各 Story / Worker 状态
+ralph diagnose 1001            # Story ID 对应 1-1（格式 epic*1000+story）
+ralph retry 1002               # 修复后重试 Story 1-2
+ralph stop                     # 停止 daemon
+```
+
+> Story ID 规则：`1-2-user-registration-api` → ID `1002`（epic 1，story 2）。
+
+### 第 5 步：Sprint 收尾
+
+1. 确认所有 Story 在 `sprint-status.yaml` 中为 `done`，且具备步骤 5–9 的质量产物
+2. 可选：`/bmad-bmm-retrospective` 做 Epic 回顾
+3. 下一 Sprint：重复 **第 2 步**，将 Epic 2（用户资料 CRUD）纳入规划
+
+### 示例时间线总览
+
+```text
+Week 0  ralph init + BMAD 一次性规划（PRD、架构、Epic）
+Week 1  Sprint Planning → Story 1-1 ~ 1-4 规格 + ATDD
+        ralph start → 自动执行 / 人工监控
+        质量门禁（CR、RV、NR、TR）→ 合并 PR
+Week 2  Epic 2 Sprint Planning → 资料 CRUD Stories → 重复循环
+```
+
+### 人工 vs 自主分工建议
+
+| 活动 | 建议方式 |
+|------|----------|
+| PRD、架构、Sprint 规划 | **人工** + BMAD（需要业务判断） |
+| Story 规格、ATDD、代码评审 | **人工** + BMAD（质量把关） |
+| 重复性 dev-story 实现 | **Ralph 自主** + 人工 `watch` 监控 |
+| 合并 main、生产发布 | **人工** 审批 |
 
 ## 配置说明
 
@@ -295,7 +474,7 @@ make rust-fmt-check
 
 ### 开发工作流
 
-1. 阅读 [WORKFLOW.md](WORKFLOW.md) 了解 BMAD + TEA 步骤顺序
+1. 阅读 [WORKFLOW.zh-CN.md](WORKFLOW.zh-CN.md) 了解 BMAD + TEA 步骤顺序
 2. 查看 `_bmad-output/implementation-artifacts/sprint-status.yaml` 确认当前 sprint 进度
 3. 创建功能分支：`git checkout -b cursor/<name>-a391`
 4. 实现 story，运行 `make test-all` 确认通过
@@ -342,7 +521,8 @@ ralph completions bash|zsh|fish
 
 ## 相关文档
 
-- [WORKFLOW.md](WORKFLOW.md) — BMAD + TEA 工作流执行顺序
+- [WORKFLOW.zh-CN.md](WORKFLOW.zh-CN.md) — BMAD + TEA 工作流执行顺序（中文）
+- [WORKFLOW.md](WORKFLOW.md) — BMAD + TEA workflow (English)
 - [CLAUDE.md](CLAUDE.md) — 架构与编码约定（面向 AI 协作者）
 - `_bmad-output/planning-artifacts/` — PRD、架构、Epic 规划产物
 
