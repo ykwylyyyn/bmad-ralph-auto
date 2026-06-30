@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Ralph contributors" }]
+dependencies = [
+    "pyyaml>=6.0",
+]
 
 [project.scripts]
 ralph = "ralph.cli:main"

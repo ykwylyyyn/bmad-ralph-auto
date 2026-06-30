@@ -5,11 +5,13 @@ from pathlib import Path
 import tomllib
 
 DEFAULT_MAX_WORKERS = 5
+DEFAULT_RETRY_LIMIT = 3
 
 
 @dataclass(frozen=True, slots=True)
 class RalphConfig:
     max_workers: int | None = None
+    retry_limit: int | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, object]) -> "RalphConfig":
@@ -18,15 +20,26 @@ class RalphConfig:
             raise ValueError("max_workers must be an integer")
         if isinstance(max_workers, int) and max_workers < 1:
             raise ValueError("max_workers must be positive")
-        return cls(max_workers=max_workers)
+
+        retry_limit = data.get("retry_limit")
+        if retry_limit is not None and not isinstance(retry_limit, int):
+            raise ValueError("retry_limit must be an integer")
+        if isinstance(retry_limit, int) and retry_limit < 1:
+            raise ValueError("retry_limit must be positive")
+
+        return cls(max_workers=max_workers, retry_limit=retry_limit)
 
     def merge(self, other: "RalphConfig") -> "RalphConfig":
         return RalphConfig(
             max_workers=other.max_workers if other.max_workers is not None else self.max_workers,
+            retry_limit=other.retry_limit if other.retry_limit is not None else self.retry_limit,
         )
 
     def effective(self) -> "RalphConfig":
-        return RalphConfig(max_workers=self.max_workers or DEFAULT_MAX_WORKERS)
+        return RalphConfig(
+            max_workers=self.max_workers or DEFAULT_MAX_WORKERS,
+            retry_limit=self.retry_limit or DEFAULT_RETRY_LIMIT,
+        )
 
 
 def load_config(path: str | Path) -> RalphConfig:
@@ -71,4 +84,6 @@ def render_config(config: RalphConfig) -> str:
     lines = []
     if config.max_workers is not None:
         lines.append(f"max_workers = {config.max_workers}")
+    if config.retry_limit is not None:
+        lines.append(f"retry_limit = {config.retry_limit}")
     return "\n".join(lines) + "\n"

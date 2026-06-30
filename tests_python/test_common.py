@@ -30,7 +30,18 @@ class CommonTests(unittest.TestCase):
         rows = connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
         ).fetchall()
-        self.assertEqual([row[0] for row in rows], ["healing_attempts", "stories", "workers"])
+        self.assertEqual(
+            [row[0] for row in rows],
+            [
+                "diagnostic_reports",
+                "healing_attempts",
+                "pipeline_events",
+                "pipeline_state",
+                "stories",
+                "story_dependencies",
+                "workers",
+            ],
+        )
 
 
 if __name__ == "__main__":

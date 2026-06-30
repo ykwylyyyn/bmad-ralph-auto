@@ -1,5 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+
 # Build artifacts
 target/
+__pycache__/
+*.py[cod]
 
 # Ralph local config
 .ralph/

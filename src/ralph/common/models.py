@@ -55,8 +55,12 @@ class Story:
     id: int
     title: str
     state: StoryState = StoryState.QUEUED
+    key: str = ""
     dependencies: list[int] = field(default_factory=list)
+    acceptance_criteria: list[str] = field(default_factory=list)
     worker_id: int | None = None
+    key: str = ""
+    acceptance_criteria: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -70,3 +74,13 @@ class HealingAttempt:
     layer: HealingLayer
     attempt: int
     reason: str
+
+
+@dataclass(slots=True)
+class DiagnosticReport:
+    story_id: int
+    root_cause: str
+    recommendation: str
+    suggested_fix: str
+    analysis: dict[str, object] = field(default_factory=dict)
+    id: int | None = None
