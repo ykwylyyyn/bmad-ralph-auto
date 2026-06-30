@@ -227,6 +227,35 @@ class StateStore:
 
         return self.get_story(story_id)
 
+    def rollback_story_assignment(self, story_id: int) -> Story:
+        now = _now()
+        with self._connection:
+            row = self._connection.execute(
+                "SELECT state FROM stories WHERE id = ?",
+                (story_id,),
+            ).fetchone()
+            if row is None:
+                raise StoryNotFoundError(story_id)
+
+            from_state = StoryState(row["state"])
+            if not is_valid_transition(from_state, StoryState.QUEUED):
+                raise InvalidTransitionError(story_id, from_state.value, StoryState.QUEUED.value)
+
+            cursor = self._connection.execute(
+                """
+                UPDATE stories
+                SET state = ?, worker_id = NULL, updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (StoryState.QUEUED.value, now, story_id, from_state.value),
+            )
+            if cursor.rowcount != 1:
+                raise ConcurrentModificationError(story_id, from_state.value)
+        return self.get_story(story_id)
+
+    def clear_story_worker(self, story_id: int) -> Story:
+        return self.set_story_worker(story_id, None)
+
     def set_story_worker(self, story_id: int, worker_id: int | None) -> Story:
         now = _now()
         with self._connection:

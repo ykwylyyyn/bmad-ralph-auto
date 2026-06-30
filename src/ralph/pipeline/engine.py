@@ -8,6 +8,8 @@ from ralph.common.models import PipelineState, Story, StoryState, WorkerHealth, 
 from ralph.pipeline.dependency_graph import DependencyGraph
 from ralph.pipeline.ingestion import build_dependency_graph
 from ralph.pipeline.scheduler import StoryScheduler
+from ralph.worker.errors import WorkerSpawnError
+from ralph.worker.manager import WorkerCompletion, WorkerManager, story_state_for_result
 
 _TERMINAL_STORY_STATES = {StoryState.DONE, StoryState.FAILED}
 
@@ -18,10 +20,19 @@ class AssignmentResult:
     worker_id: int
 
 
+@dataclass(frozen=True, slots=True)
+class SpawnFailure:
+    story_id: int
+    worker_id: int
+    reason: str
+
+
 @dataclass(slots=True)
 class PipelineTickResult:
     pipeline_state: PipelineState
     assignments: list[AssignmentResult] = field(default_factory=list)
+    completions: list[WorkerCompletion] = field(default_factory=list)
+    spawn_failures: list[SpawnFailure] = field(default_factory=list)
     schedulable_count: int = 0
     active_workers: int = 0
     completed_stories: int = 0
@@ -29,13 +40,27 @@ class PipelineTickResult:
 
 
 class PipelineEngine:
-    """Orchestrates story scheduling, assignment, and pipeline state transitions."""
+    """Orchestrates story scheduling, worker spawning, and pipeline state transitions."""
 
-    def __init__(self, store: StateStore, *, max_workers: int, worktrees_dir: Path) -> None:
+    def __init__(
+        self,
+        store: StateStore,
+        *,
+        project_dir: Path,
+        max_workers: int,
+        worktrees_dir: Path,
+        worker_manager: WorkerManager | None = None,
+    ) -> None:
         self._store = store
+        self._project_dir = project_dir.resolve()
         self._scheduler = StoryScheduler(max_workers)
         self._worktrees_dir = worktrees_dir
+        self._worker_manager = worker_manager or WorkerManager(project_dir, worktrees_dir)
         self._graph: DependencyGraph | None = None
+
+    @property
+    def worker_manager(self) -> WorkerManager:
+        return self._worker_manager
 
     def initialize(self) -> PipelineState:
         stories = self._store.list_stories()
@@ -49,11 +74,18 @@ class PipelineEngine:
         self._store.set_pipeline_state(state)
         return state
 
+    def shutdown(self) -> None:
+        self._worker_manager.shutdown()
+
     def tick(self) -> PipelineTickResult:
+        completions = self._worker_manager.poll_completions()
+        for completion in completions:
+            self._handle_completion(completion)
+
         stories = self._store.list_stories()
         if not stories:
             self._store.set_pipeline_state(PipelineState.IDLE)
-            return PipelineTickResult(pipeline_state=PipelineState.IDLE)
+            return PipelineTickResult(pipeline_state=PipelineState.IDLE, completions=completions)
 
         if self._graph is None:
             self._graph = build_dependency_graph(stories)
@@ -63,18 +95,46 @@ class PipelineEngine:
         snapshot = self._scheduler.evaluate(stories, workers)
 
         assignments: list[AssignmentResult] = []
+        spawn_failures: list[SpawnFailure] = []
         idle_workers = self._scheduler.idle_workers(workers)
         for story, worker in zip(snapshot.schedulable, idle_workers):
             if len(assignments) >= snapshot.available_slots:
                 break
+
             self._store.assign_story_to_worker(story.id, worker.id)
+            try:
+                active = self._worker_manager.spawn_for_story(worker.id, story)
+            except WorkerSpawnError as exc:
+                self._store.rollback_story_assignment(story.id)
+                self._store.upsert_worker(
+                    WorkerRecord(
+                        id=worker.id,
+                        state=WorkerState.IDLE,
+                        health=WorkerHealth.DEGRADED,
+                        worktree_path=worker.worktree_path,
+                        pid=None,
+                    )
+                )
+                self._store.record_pipeline_event(
+                    "worker_spawn_failed",
+                    {
+                        "story_id": story.id,
+                        "worker_id": worker.id,
+                        "reason": exc.reason,
+                    },
+                )
+                spawn_failures.append(
+                    SpawnFailure(story_id=story.id, worker_id=worker.id, reason=exc.reason)
+                )
+                continue
+
             self._store.upsert_worker(
                 WorkerRecord(
                     id=worker.id,
                     state=WorkerState.RUNNING,
-                    health=worker.health,
-                    worktree_path=worker.worktree_path,
-                    pid=worker.pid,
+                    health=WorkerHealth.HEALTHY,
+                    worktree_path=str(active.worktree_path),
+                    pid=active.session.pid,
                 )
             )
             assignments.append(AssignmentResult(story_id=story.id, worker_id=worker.id))
@@ -99,6 +159,8 @@ class PipelineEngine:
         return PipelineTickResult(
             pipeline_state=pipeline_state,
             assignments=assignments,
+            completions=completions,
+            spawn_failures=spawn_failures,
             schedulable_count=len(snapshot.schedulable),
             active_workers=self._scheduler.active_worker_count(workers),
             completed_stories=completed,
@@ -108,12 +170,32 @@ class PipelineEngine:
     def status_message(self, tick: PipelineTickResult) -> str:
         if tick.pipeline_state == PipelineState.COMPLETE:
             return f"pipeline complete: {tick.completed_stories} stories done"
+        if tick.spawn_failures:
+            failure = tick.spawn_failures[0]
+            return f"pipeline running: spawn failed for story #{failure.story_id} ({failure.reason})"
         if tick.assignments:
             assigned = ", ".join(f"#{item.story_id}->W{item.worker_id}" for item in tick.assignments)
-            return f"pipeline running: assigned {assigned}"
+            return f"pipeline running: spawned {assigned}"
+        if tick.completions:
+            return f"pipeline running: {len(tick.completions)} worker(s) finished"
         return (
             f"pipeline {tick.pipeline_state.value}: "
             f"{tick.schedulable_count} schedulable, {tick.active_workers} active workers"
+        )
+
+    def _handle_completion(self, completion: WorkerCompletion) -> None:
+        target_state = story_state_for_result(completion.result)
+        story = self._store.get_story(completion.story_id)
+        if story.state == StoryState.IN_PROGRESS:
+            self._store.transition_story_state(completion.story_id, target_state)
+        self._store.upsert_worker(
+            WorkerRecord(
+                id=completion.worker_id,
+                state=WorkerState.IDLE,
+                health=WorkerHealth.HEALTHY,
+                worktree_path=str(self._worktrees_dir / f"worker-{completion.worker_id}"),
+                pid=None,
+            )
         )
 
     def _ensure_worker_pool(self) -> None:

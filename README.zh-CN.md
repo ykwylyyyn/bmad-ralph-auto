@@ -63,6 +63,7 @@ ralph completions bash|zsh|fish
 - SQLite 状态持久化层：原子 story 转换、崩溃恢复、WAL 并发读、healing 记录清理
 - BMAD artifact 解析与 sprint plan 摄入：`ralph start` 自动检测并加载 sprint-status.yaml
 - Pipeline 状态机与调度器：依赖感知分配、并发限制、原子状态转换
+- Worker 启动与 git worktree 隔离：Claude 进程在独立 worktree 中执行 story
 
 ## 构建与测试
 

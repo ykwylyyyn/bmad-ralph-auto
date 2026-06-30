@@ -160,6 +160,7 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
     recovered = store.load_snapshot()
     engine = PipelineEngine(
         store,
+        project_dir=paths.project_dir,
         max_workers=config.effective().max_workers or 5,
         worktrees_dir=paths.worktrees_dir,
     )
@@ -194,6 +195,7 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
             if not should_stop:
                 time.sleep(heartbeat_secs)
     finally:
+        engine.shutdown()
         store.close()
         ipc.close()
         _remove_if_exists(paths.pid_file)

@@ -1,27 +1,43 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
 from ralph.common.db import StateStore
-from ralph.common.models import PipelineState, Story, StoryState, WorkerHealth, WorkerState
+from ralph.common.models import Story, StoryState, WorkerHealth, WorkerState
 from ralph.common.db.store import WorkerRecord
 from ralph.pipeline.engine import PipelineEngine
 from ralph.pipeline.ingestion import build_dependency_graph
+from ralph.common.models import PipelineState
+
+from helpers import fake_claude_process, init_git_repo, worker_manager_for_repo
 
 
 class PipelineEngineTests(unittest.TestCase):
     def test_assigns_parallel_stories_up_to_worker_limit(self) -> None:
         store = StateStore.open_in_memory()
         try:
-            store.upsert_story(Story(id=1001, title="One", state=StoryState.QUEUED))
-            store.upsert_story(Story(id=1002, title="Two", state=StoryState.QUEUED))
-            store.upsert_story(Story(id=1003, title="Three", state=StoryState.QUEUED))
+            store.upsert_story(Story(id=1001, title="One", state=StoryState.QUEUED, key="1-1-one"))
+            store.upsert_story(Story(id=1002, title="Two", state=StoryState.QUEUED, key="1-2-two"))
+            store.upsert_story(Story(id=1003, title="Three", state=StoryState.QUEUED, key="1-3-three"))
             store.replace_story_dependencies({1001: [], 1002: [], 1003: []})
 
             with tempfile.TemporaryDirectory() as tmp:
-                engine = PipelineEngine(store, max_workers=2, worktrees_dir=Path(tmp))
+                root = Path(tmp) / "project"
+                worktrees = root / ".ralph" / "worktrees"
+                init_git_repo(root)
+                manager = worker_manager_for_repo(root, worktrees)
+                engine = PipelineEngine(
+                    store,
+                    project_dir=root,
+                    max_workers=2,
+                    worktrees_dir=worktrees,
+                    worker_manager=manager,
+                )
                 engine.initialize()
                 tick = engine.tick()
 
@@ -56,7 +72,15 @@ class PipelineEngineTests(unittest.TestCase):
             store.upsert_story(Story(id=3002, title="Failed", state=StoryState.FAILED))
 
             with tempfile.TemporaryDirectory() as tmp:
-                engine = PipelineEngine(store, max_workers=1, worktrees_dir=Path(tmp))
+                root = Path(tmp) / "project"
+                worktrees = root / ".ralph" / "worktrees"
+                init_git_repo(root)
+                engine = PipelineEngine(
+                    store,
+                    project_dir=root,
+                    max_workers=1,
+                    worktrees_dir=worktrees,
+                )
                 engine.initialize()
                 tick = engine.tick()
 
@@ -70,27 +94,42 @@ class PipelineEngineTests(unittest.TestCase):
 
     def test_sequential_dependencies_assign_in_order(self) -> None:
         store = StateStore.open_in_memory()
+        tempdir = tempfile.TemporaryDirectory()
         try:
-            store.upsert_story(Story(id=4001, title="First", state=StoryState.QUEUED))
-            store.upsert_story(Story(id=4002, title="Second", state=StoryState.QUEUED, dependencies=[4001]))
+            root = Path(tempdir.name) / "project"
+            worktrees = root / ".ralph" / "worktrees"
+            init_git_repo(root)
+            store.upsert_story(Story(id=4001, title="First", state=StoryState.QUEUED, key="4-1-first"))
+            store.upsert_story(
+                Story(id=4002, title="Second", state=StoryState.QUEUED, dependencies=[4001], key="4-2-second")
+            )
             store.replace_story_dependencies({4001: [], 4002: [4001]})
 
-            with tempfile.TemporaryDirectory() as tmp:
-                engine = PipelineEngine(store, max_workers=1, worktrees_dir=Path(tmp))
-                engine.initialize()
-                first_tick = engine.tick()
-                self.assertEqual([item.story_id for item in first_tick.assignments], [4001])
+            manager = worker_manager_for_repo(root, worktrees)
+            engine = PipelineEngine(
+                store,
+                project_dir=root,
+                max_workers=1,
+                worktrees_dir=worktrees,
+                worker_manager=manager,
+            )
+            engine.initialize()
+            first_tick = engine.tick()
+            self.assertEqual([item.story_id for item in first_tick.assignments], [4001])
 
-                store.transition_story_state(4001, StoryState.IN_REVIEW)
-                store.transition_story_state(4001, StoryState.DONE)
-                store.upsert_worker(
-                    WorkerRecord(1, WorkerState.IDLE, WorkerHealth.HEALTHY, str(Path(tmp) / "worker-1"))
-                )
+            time.sleep(0.3)
+            second_tick = engine.tick()
+            self.assertEqual(len(second_tick.completions), 1)
+            store.transition_story_state(4001, StoryState.DONE)
+            store.upsert_worker(
+                WorkerRecord(1, WorkerState.IDLE, WorkerHealth.HEALTHY, str(worktrees / "worker-1"))
+            )
 
-                second_tick = engine.tick()
-                self.assertEqual([item.story_id for item in second_tick.assignments], [4002])
+            third_tick = engine.tick()
+            self.assertEqual([item.story_id for item in third_tick.assignments], [4002])
         finally:
             store.close()
+            tempdir.cleanup()
 
     def test_dependency_graph_matches_store(self) -> None:
         stories = [
