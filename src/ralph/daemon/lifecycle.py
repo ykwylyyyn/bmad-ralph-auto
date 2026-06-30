@@ -11,8 +11,10 @@ import sys
 import time
 
 from ralph.common.db import apply_schema
+from ralph.common.protocol import Request
 from ralph.config import RalphConfig
 
+from .ipc import IpcServer, request_daemon, status_response
 from .runtime import RuntimePaths
 
 
@@ -82,7 +84,9 @@ def stop_daemon(project_dir: str | Path, timeout_secs: float = 5.0) -> DaemonSta
     if status.state != "running":
         return status
 
-    paths.stop_file.write_text(_now(), encoding="utf-8")
+    response = request_daemon(paths, Request(type="stop", graceful=True), timeout_secs=1.0)
+    if response.type == "error":
+        paths.stop_file.write_text(_now(), encoding="utf-8")
     deadline = time.monotonic() + timeout_secs
     while time.monotonic() < deadline:
         status = read_status(paths.project_dir)
@@ -155,22 +159,26 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
     started_at = _now()
     pid = os.getpid()
     paths.pid_file.write_text(str(pid), encoding="utf-8")
+    ipc = IpcServer(paths)
+    ipc.start()
+    should_stop = False
 
     try:
-        while not paths.stop_file.exists():
-            _write_status(
-                paths,
-                DaemonStatus(
-                    state="running",
-                    pid=pid,
-                    project_dir=str(paths.project_dir),
-                    max_workers=config.effective().max_workers or 5,
-                    started_at=started_at,
-                    heartbeat_at=_now(),
-                ),
+        while not should_stop and not paths.stop_file.exists():
+            status = DaemonStatus(
+                state="running",
+                pid=pid,
+                project_dir=str(paths.project_dir),
+                max_workers=config.effective().max_workers or 5,
+                started_at=started_at,
+                heartbeat_at=_now(),
             )
-            time.sleep(heartbeat_secs)
+            _write_status(paths, status)
+            should_stop = ipc.poll(lambda request: _handle_request(request, status, paths))
+            if not should_stop:
+                time.sleep(heartbeat_secs)
     finally:
+        ipc.close()
         _remove_if_exists(paths.pid_file)
         _remove_if_exists(paths.stop_file)
         _write_status(
@@ -186,6 +194,35 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
             ),
         )
     return 0
+
+
+def _handle_request(request: Request, status: DaemonStatus, paths: RuntimePaths):
+    if request.type == "status":
+        return status_response(status)
+    if request.type == "stop":
+        paths.stop_file.write_text(_now(), encoding="utf-8")
+        return status_response(
+            DaemonStatus(
+                state="stopping",
+                pid=status.pid,
+                project_dir=status.project_dir,
+                max_workers=status.max_workers,
+                started_at=status.started_at,
+                heartbeat_at=_now(),
+                message="stop requested",
+            )
+        )
+    return status_response(
+        DaemonStatus(
+            state="running",
+            pid=status.pid,
+            project_dir=status.project_dir,
+            max_workers=status.max_workers,
+            started_at=status.started_at,
+            heartbeat_at=status.heartbeat_at,
+            message=f"unsupported request: {request.type}",
+        )
+    )
 
 
 def _initialize_database(paths: RuntimePaths) -> None:

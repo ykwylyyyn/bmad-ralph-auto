@@ -25,6 +25,14 @@ class RuntimePaths:
         return self.runtime_dir / "stop.request"
 
     @property
+    def socket_file(self) -> Path:
+        return self.runtime_dir / "ralph.sock"
+
+    @property
+    def port_file(self) -> Path:
+        return self.runtime_dir / "ralph.port"
+
+    @property
     def database_file(self) -> Path:
         return self.runtime_dir / "ralph.db"
 

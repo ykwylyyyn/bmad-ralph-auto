@@ -26,7 +26,7 @@ src/ralph/config/         # TOML 配置加载
 src/ralph/common/         # 共享模型、协议类型、SQLite schema
 ```
 
-关键选择：SQLite + WAL 用于持久化，JSON request/response 类型用于协议结构，`asyncio` 用于进程管理。
+关键选择：SQLite + WAL 用于持久化，JSON request/response IPC 用于通信，`asyncio` 用于进程管理。IPC 在可用时使用 Unix domain socket；在没有 `AF_UNIX` 的平台上自动回退到项目本地 loopback endpoint。
 
 迁移期间，旧 Rust workspace 仍保留在仓库中作为参考。
 
@@ -59,6 +59,7 @@ ralph completions bash|zsh|fish
 - 三层配置优先级：CLI 覆盖项、项目 TOML、用户 TOML、默认值
 - `ralph init` 项目脚手架和 `ralph completions` 生成
 - 后台 daemon 进程生命周期：PID/status 文件、heartbeat、优雅停止和 SQLite schema 初始化
+- daemon `status` 和 `stop` 请求的 JSON IPC
 
 ## 构建与测试
 

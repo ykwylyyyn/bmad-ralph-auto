@@ -26,7 +26,7 @@ src/ralph/config/         # TOML config loading
 src/ralph/common/         # Shared models, protocol types, SQLite schema
 ```
 
-Key choices: SQLite + WAL for persistence, JSON request/response protocol types, and `asyncio` for process management.
+Key choices: SQLite + WAL for persistence, JSON request/response IPC, and `asyncio` for process management. IPC uses Unix domain sockets when available and falls back to a project-local loopback endpoint on platforms without `AF_UNIX`.
 
 The previous Rust workspace remains in the repository during migration as reference material.
 
@@ -59,6 +59,7 @@ The Python CLI currently includes config resolution, project initialization, she
 - Three-tier config precedence: CLI overrides, project TOML, user TOML, then defaults
 - `ralph init` project scaffolding and `ralph completions` generation
 - Background daemon process lifecycle with PID/status files, heartbeat, graceful stop, and SQLite schema initialization
+- JSON IPC for daemon `status` and `stop` requests
 
 ## Build And Test
 

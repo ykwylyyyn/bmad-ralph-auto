@@ -6,7 +6,8 @@ import tempfile
 import unittest
 
 from ralph.config import RalphConfig
-from ralph.daemon import read_status, start_daemon, stop_daemon
+from ralph.common.protocol import Request
+from ralph.daemon import RuntimePaths, read_status, request_daemon, start_daemon, stop_daemon
 
 
 class DaemonLifecycleTests(unittest.TestCase):
@@ -24,6 +25,21 @@ class DaemonLifecycleTests(unittest.TestCase):
 
                 stopped = stop_daemon(root)
                 self.assertEqual(stopped.state, "stopped")
+            finally:
+                stop_daemon(root)
+
+    def test_status_request_uses_socket_ipc(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            try:
+                start_daemon(root, RalphConfig(max_workers=3))
+                paths = RuntimePaths(root)
+
+                response = request_daemon(paths, Request(type="status"))
+
+                self.assertEqual(response.type, "ok")
+                self.assertEqual(response.data["state"], "running")
+                self.assertEqual(response.data["max_workers"], 3)
             finally:
                 stop_daemon(root)
 

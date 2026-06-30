@@ -5,8 +5,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
+from .common.protocol import Request
 from .config import RalphConfig, default_project_config_path, default_user_config_path, resolve_config
-from .daemon import read_status, run_daemon, start_daemon, stop_daemon
+from .daemon import RuntimePaths, read_status, request_daemon, run_daemon, start_daemon, stop_daemon
 from .init_project import init_project
 
 
@@ -136,7 +137,11 @@ def _run_stop(args: argparse.Namespace) -> None:
 
 
 def _run_status(args: argparse.Namespace) -> None:
-    status = read_status(args.project_dir)
+    response = request_daemon(RuntimePaths(args.project_dir.resolve()), Request(type="status"), timeout_secs=1.0)
+    if response.type == "ok" and response.data is not None:
+        status = _status_from_response(response.data)
+    else:
+        status = read_status(args.project_dir)
     suffix = " with detail" if args.detail else ""
     print(f"status: {status.state}{suffix} pid={status.pid} max_workers={status.max_workers}")
     if args.detail and status.message:
@@ -169,6 +174,20 @@ def _run_completions(args: argparse.Namespace) -> None:
 
 def _run_daemon(args: argparse.Namespace) -> None:
     raise SystemExit(run_daemon(args.project_dir, RalphConfig(max_workers=args.max_workers)))
+
+
+def _status_from_response(data: dict[str, object]):
+    from .daemon import DaemonStatus
+
+    return DaemonStatus(
+        state=str(data.get("state", "unknown")),
+        pid=data.get("pid") if isinstance(data.get("pid"), int) else None,
+        project_dir=str(data.get("project_dir", "")),
+        max_workers=int(data.get("max_workers", 5)),
+        started_at=data.get("started_at") if isinstance(data.get("started_at"), str) else None,
+        heartbeat_at=data.get("heartbeat_at") if isinstance(data.get("heartbeat_at"), str) else None,
+        message=str(data.get("message", "")),
+    )
 
 
 def generate_completion(shell: str) -> str:

@@ -52,7 +52,7 @@ development_status:
   # Epic 2: Autonomous Story Execution
   epic-2: in-progress
   2-1-daemon-process-lifecycle-signal-handling: done
-  2-2-unix-domain-socket-ipc: backlog
+  2-2-unix-domain-socket-ipc: done
   2-3-sqlite-state-persistence-layer: backlog
   2-4-bmad-artifact-parsing-sprint-plan-ingestion: backlog
   2-5-pipeline-state-machine-story-scheduler: backlog
