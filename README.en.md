@@ -14,7 +14,6 @@ Ralph pairs with [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) for
 | Node.js | 20.12+ (`ralph init` installs BMAD via `npx bmad-method install`) |
 | Git | Required for worktree isolation |
 | Claude Code CLI | Defaults to `claude`; override via environment variable |
-| Cargo (optional) | Only needed for legacy Rust workspace development in this repo |
 
 ## Installation
 
@@ -388,8 +387,6 @@ scripts/ci-local.sh     # Local CI reproduction
 .github/workflows/ci.yml
 ```
 
-The legacy Rust workspace (`crates/`) remains during migration as reference material.
-
 ## Developing in This Repository
 
 ### Clone and dependencies
@@ -403,16 +400,11 @@ pip install -e ".[dev]" 2>/dev/null || pip install -e .
 ### Running tests
 
 ```bash
-# Python tests (151)
+# Python tests
 make test-all
 
-# Reproduce full CI locally (Python + Rust)
+# Reproduce CI locally
 ./scripts/ci-local.sh
-
-# Rust only (migration period)
-make rust-test
-make rust-clippy
-make rust-fmt-check
 ```
 
 ### Development workflow
@@ -421,7 +413,7 @@ make rust-fmt-check
 2. Check `_bmad-output/implementation-artifacts/sprint-status.yaml` for current sprint progress
 3. Create a feature branch: `git checkout -b cursor/<name>-a391`
 4. Implement the story; run `make test-all` before pushing
-5. Open a PR; CI runs Python + Rust quality gates on `main`
+5. Open a PR; CI runs Python tests on `main`
 
 ### Useful dev commands
 
@@ -432,9 +424,6 @@ PYTHONPATH=src python -m ralph init --project-dir /tmp/ralph-demo
 
 # Clean Python caches
 make clean
-
-# Format Rust code
-make rust-fmt
 ```
 
 ## CLI Reference
