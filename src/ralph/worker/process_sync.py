@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 
+from .claude_cmd import resolve_claude_command
 from .errors import ProcessSpawnFailed
 from .output_capture import StreamCapture
 from .process import ClaudeOutput
@@ -64,7 +65,7 @@ class SyncClaudeProcess:
         elif claude_bin is not None:
             self._command = [claude_bin]
         else:
-            self._command = [os.environ.get("RALPH_CLAUDE_BIN", "claude")]
+            self._command = resolve_claude_command()
         self._logs_dir = logs_dir
         self._worker_id = worker_id
 
