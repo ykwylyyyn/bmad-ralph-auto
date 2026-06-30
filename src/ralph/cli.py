@@ -11,6 +11,13 @@ from .daemon import RuntimePaths, read_status, request_daemon, run_daemon, start
 from .init_project import init_project
 from .render import Spinner, error_message, resolve_theme, section_border
 from .render.theme import Semantic
+from .diagnose import (
+    DiagnoseLoadError,
+    DiagnoseLoadErrorKind,
+    list_failed_story_ids,
+    load_diagnose_snapshot,
+    render_diagnose,
+)
 from .status import load_status_snapshot, render_status
 
 
@@ -47,7 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate diagnostic report for a story",
         description="Generate diagnostic report for a story",
     )
-    diagnose.add_argument("story_id", metavar="STORY_ID", type=_story_id)
+    _add_project_dir_arg(diagnose)
+    diagnose.add_argument("story_id", metavar="STORY_ID", nargs="?", type=_story_id)
     diagnose.set_defaults(handler=_run_diagnose)
 
     retry = subcommands.add_parser(
@@ -187,7 +195,34 @@ def _run_status(args: argparse.Namespace) -> None:
 
 
 def _run_diagnose(args: argparse.Namespace) -> None:
-    print(f"diagnose: not yet implemented for story {args.story_id}")
+    project_dir = getattr(args, "project_dir", Path.cwd())
+    if args.story_id is None:
+        failed_ids = list_failed_story_ids(project_dir)
+        if not failed_ids:
+            print("No failed stories to diagnose. All stories completed successfully.")
+            return
+        for story_id in failed_ids:
+            _render_diagnose_for_story(project_dir, story_id, theme=args.theme)
+            print()
+        return
+
+    _render_diagnose_for_story(project_dir, args.story_id, theme=args.theme)
+
+
+def _render_diagnose_for_story(project_dir: Path, story_id: int, *, theme) -> None:
+    result = load_diagnose_snapshot(project_dir, story_id)
+    if isinstance(result, DiagnoseLoadError):
+        if result.kind == DiagnoseLoadErrorKind.STORY_NOT_FOUND:
+            print(
+                error_message(
+                    f"Story #{story_id} not found in current sprint",
+                    suggestion="Run ralph status to see available stories",
+                    theme=theme,
+                )
+            )
+            raise SystemExit(1)
+        return
+    print(render_diagnose(result, theme=theme))
 
 
 def _run_retry(args: argparse.Namespace) -> None:

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from ralph.cli import generate_completion, main
+from ralph.init_project import init_project
 
 
 class CliTests(unittest.TestCase):
@@ -46,6 +47,12 @@ class CliTests(unittest.TestCase):
         self.assertIn("invalid value", stderr)
 
     def test_story_id_commands_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            init_project(Path(tmp))
+            code, stdout, _stderr = self.run_cli("diagnose", "99", "--project-dir", tmp)
+            self.assertEqual(code, 1)
+            self.assertIn("Story #99 not found", stdout)
+
         code, stdout, _stderr = self.run_cli("retry", "7")
         self.assertEqual(code, 0)
         self.assertIn("story 7", stdout)
