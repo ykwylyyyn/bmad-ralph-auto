@@ -14,6 +14,7 @@ from .reader import (
     find_sprint_status,
     iter_story_keys,
     load_sprint_status,
+    project_dir_from_sprint_status,
     read_story_artifact,
     require_sprint_status,
     story_location_dir,

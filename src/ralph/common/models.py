@@ -55,7 +55,9 @@ class Story:
     id: int
     title: str
     state: StoryState = StoryState.QUEUED
+    key: str = ""
     dependencies: list[int] = field(default_factory=list)
+    acceptance_criteria: list[str] = field(default_factory=list)
     worker_id: int | None = None
     key: str = ""
     acceptance_criteria: list[str] = field(default_factory=list)

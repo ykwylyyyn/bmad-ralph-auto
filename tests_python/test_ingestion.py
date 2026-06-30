@@ -6,7 +6,7 @@ import textwrap
 import unittest
 
 from ralph.common.db import StateStore
-from ralph.common.models import StoryState
+from ralph.common.models import Story, StoryState
 from ralph.pipeline.ingestion import ingest_sprint_plan, persist_ingested_plan
 from ralph.pipeline.artifact import ArtifactParseError, SprintPlanNotFoundError
 from ralph.pipeline.dependency_graph import DependencyGraph
@@ -123,13 +123,14 @@ class IngestionTests(unittest.TestCase):
 
         empty = self.root / "no-plan"
         empty.mkdir()
-        stderr = StringIO()
-        with contextlib.redirect_stderr(stderr):
+        stdout = StringIO()
+        with contextlib.redirect_stdout(stdout):
             with self.assertRaises(SystemExit) as ctx:
                 main(["start", "--project-dir", str(empty)])
         self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("No sprint plan found in project", stdout.getvalue())
 
-    def test_start_ingests_real_repo_sprint_plan(self) -> None:
+    def test_ingest_real_repo_sprint_plan(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         if not (repo_root / "_bmad-output" / "implementation-artifacts" / "sprint-status.yaml").exists():
             self.skipTest("repository sprint plan not available")
@@ -140,9 +141,7 @@ class IngestionTests(unittest.TestCase):
         result.graph.validate()
 
 
-def _story(story_id: int, dependencies: list[int]):
-    from ralph.common.models import Story
-
+def _story(story_id: int, dependencies: list[int]) -> Story:
     return Story(id=story_id, title=f"Story {story_id}", dependencies=dependencies)
 
 
