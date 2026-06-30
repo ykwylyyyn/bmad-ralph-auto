@@ -1,5 +1,5 @@
-# BMad TEA CI pipeline — Python + Rust quality gates for bmad-ralph
-# Stack: backend (Python CLI + legacy Rust workspace)
+# BMad TEA CI pipeline — Python quality gates for bmad-ralph
+# Stack: Python CLI backend
 # Burn-in: skipped (backend-only; targets UI flakiness per TEA guidance)
 
 name: CI
@@ -40,62 +40,10 @@ jobs:
       - name: Run Python test suite
         run: make test-all
 
-  rust:
-    name: Rust Quality Gate
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache Cargo registry and build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Build workspace
-        run: cargo build --workspace
-
-      - name: Clippy (deny warnings)
-        run: cargo clippy --workspace -- -D warnings
-
-      - name: Run Rust tests
-        run: cargo test --workspace
-
-  quality-gate:
-    name: Quality Gate
-    runs-on: ubuntu-latest
-    needs: [python, rust]
-    if: always()
-
-    steps:
-      - name: Require all checks to pass
-        run: |
-          if [ "${{ needs.python.result }}" != "success" ] || [ "${{ needs.rust.result }}" != "success" ]; then
-            echo "Quality gate failed."
-            echo "  python: ${{ needs.python.result }}"
-            echo "  rust:   ${{ needs.rust.result }}"
-            exit 1
-          fi
-          echo "Quality gate passed."
-
       - name: Summary
         run: |
           {
             echo "## CI Quality Gate"
             echo ""
-            echo "| Job | Result |"
-            echo "|-----|--------|"
-            echo "| Python Tests | ${{ needs.python.result }} |"
-            echo "| Rust Quality Gate | ${{ needs.rust.result }} |"
+            echo "Python tests passed."
           } >> "$GITHUB_STEP_SUMMARY"

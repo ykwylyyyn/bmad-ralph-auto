@@ -14,7 +14,6 @@ Ralph 与 [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) 配合使�
 | Node.js | 20.12+（`ralph init` 通过 `npx bmad-method install` 安装 BMAD） |
 | Git | 用于 worktree 隔离 |
 | Claude Code CLI | 默认命令为 `claude`，可通过环境变量覆盖 |
-| Cargo（可选） | 仅在本仓库开发或运行遗留 Rust 测试时需要 |
 
 ## 安装
 
@@ -642,8 +641,6 @@ scripts/ci-local.sh     # 本地复现 CI
 .github/workflows/ci.yml
 ```
 
-迁移期间，遗留 Rust workspace（`crates/`）仍保留在仓库中作为参考。
-
 ## 在本仓库开发
 
 ### 克隆与依赖
@@ -657,16 +654,11 @@ pip install -e ".[dev]" 2>/dev/null || pip install -e .
 ### 运行测试
 
 ```bash
-# Python 测试（151 项）
+# Python 测试
 make test-all
 
-# 本地复现完整 CI（Python + Rust）
+# 本地复现 CI
 ./scripts/ci-local.sh
-
-# 仅 Rust（迁移期）
-make rust-test
-make rust-clippy
-make rust-fmt-check
 ```
 
 ### 开发工作流
@@ -675,7 +667,7 @@ make rust-fmt-check
 2. 查看 `_bmad-output/implementation-artifacts/sprint-status.yaml` 确认当前 sprint 进度
 3. 创建功能分支：`git checkout -b cursor/<name>-a391`
 4. 实现 story，运行 `make test-all` 确认通过
-5. 推送并创建 PR；CI 会在 `main` 上自动运行 Python + Rust 质量门禁
+5. 推送并创建 PR；CI 会在 `main` 上自动运行 Python 测试
 
 ### 常用开发命令
 
@@ -686,9 +678,6 @@ PYTHONPATH=src python -m ralph init --project-dir /tmp/ralph-demo
 
 # 清理 Python 缓存
 make clean
-
-# 格式化 Rust 代码
-make rust-fmt
 ```
 
 ## CLI 参考
