@@ -43,7 +43,7 @@ ralph init       # Initialize Ralph on a project
 ralph completions bash|zsh|fish
 ```
 
-The Python CLI currently includes config resolution, project initialization, shell completion generation, and functional stubs for daemon/runtime commands.
+The Python CLI currently includes config resolution, project initialization, shell completion generation, and a lightweight local daemon lifecycle for `start`, `status`, and `stop`.
 
 ## Development Status
 
@@ -58,6 +58,7 @@ The Python CLI currently includes config resolution, project initialization, she
 - Python regression tests for CLI, config, common models/schema, and worker output parsing
 - Three-tier config precedence: CLI overrides, project TOML, user TOML, then defaults
 - `ralph init` project scaffolding and `ralph completions` generation
+- Background daemon process lifecycle with PID/status files, heartbeat, graceful stop, and SQLite schema initialization
 
 ## Build And Test
 

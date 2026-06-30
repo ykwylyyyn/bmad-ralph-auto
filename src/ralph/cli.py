@@ -6,6 +6,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import RalphConfig, default_project_config_path, default_user_config_path, resolve_config
+from .daemon import read_status, run_daemon, start_daemon, stop_daemon
 from .init_project import init_project
 
 
@@ -25,12 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     start = subcommands.add_parser("start", help="Start the Ralph daemon", description="Start the Ralph daemon")
+    _add_project_dir_arg(start)
     start.set_defaults(handler=_run_start)
 
     stop = subcommands.add_parser("stop", help="Stop the Ralph daemon", description="Stop the Ralph daemon")
+    _add_project_dir_arg(stop)
     stop.set_defaults(handler=_run_stop)
 
     status = subcommands.add_parser("status", help="Query pipeline status", description="Query pipeline status")
+    _add_project_dir_arg(status)
     status.add_argument("--detail", action="store_true", help="Show story and worker details")
     status.set_defaults(handler=_run_status)
 
@@ -70,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     completions.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell to generate completions for")
     completions.set_defaults(handler=_run_completions)
 
+    daemon = subcommands.add_parser("_daemon", help=argparse.SUPPRESS)
+    daemon.add_argument("--project-dir", type=Path, required=True)
+    daemon.add_argument("--max-workers", type=_positive_int, required=True)
+    daemon.set_defaults(handler=_run_daemon)
+
     return parser
 
 
@@ -98,8 +107,13 @@ def _positive_int(value: str, *, label: str = "value") -> int:
     return parsed
 
 
+def _add_project_dir_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project-dir", type=Path, default=Path.cwd(), help="Project directory")
+
+
 def _resolved_config(args: argparse.Namespace) -> RalphConfig:
-    project_config = args.config or default_project_config_path()
+    project_dir = getattr(args, "project_dir", None) or Path.cwd()
+    project_config = args.config or default_project_config_path(project_dir)
     user_config = args.user_config or default_user_config_path()
     overrides = RalphConfig(max_workers=args.max_workers)
     return resolve_config(
@@ -111,17 +125,22 @@ def _resolved_config(args: argparse.Namespace) -> RalphConfig:
 
 def _run_start(args: argparse.Namespace) -> None:
     config = _resolved_config(args)
-    print(f"start: not yet implemented (max_workers={config.max_workers})")
+    init_project(args.project_dir, max_workers=config.max_workers or 5)
+    status = start_daemon(args.project_dir, config)
+    print(f"start: {status.state} pid={status.pid} max_workers={status.max_workers}")
 
 
-def _run_stop(_args: argparse.Namespace) -> None:
-    print("stop: not yet implemented")
+def _run_stop(args: argparse.Namespace) -> None:
+    status = stop_daemon(args.project_dir)
+    print(f"stop: {status.state} pid={status.pid}")
 
 
 def _run_status(args: argparse.Namespace) -> None:
-    config = _resolved_config(args)
+    status = read_status(args.project_dir)
     suffix = " with detail" if args.detail else ""
-    print(f"status: not yet implemented{suffix} (max_workers={config.max_workers})")
+    print(f"status: {status.state}{suffix} pid={status.pid} max_workers={status.max_workers}")
+    if args.detail and status.message:
+        print(f"message: {status.message}")
 
 
 def _run_diagnose(args: argparse.Namespace) -> None:
@@ -146,6 +165,10 @@ def _run_watch(_args: argparse.Namespace) -> None:
 
 def _run_completions(args: argparse.Namespace) -> None:
     print(generate_completion(args.shell))
+
+
+def _run_daemon(args: argparse.Namespace) -> None:
+    raise SystemExit(run_daemon(args.project_dir, RalphConfig(max_workers=args.max_workers)))
 
 
 def generate_completion(shell: str) -> str:

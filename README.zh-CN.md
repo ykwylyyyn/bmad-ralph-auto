@@ -43,7 +43,7 @@ ralph init       # 在项目中初始化 Ralph
 ralph completions bash|zsh|fish
 ```
 
-当前 Python CLI 已包含配置解析、项目初始化、shell completion 生成，以及 daemon/runtime 命令的可运行 stub。
+当前 Python CLI 已包含配置解析、项目初始化、shell completion 生成，以及 `start`、`status`、`stop` 的轻量本地 daemon 生命周期。
 
 ## 开发状态
 
@@ -58,6 +58,7 @@ ralph completions bash|zsh|fish
 - 覆盖 CLI、配置、common 模型/schema、worker 输出解析的 Python 回归测试
 - 三层配置优先级：CLI 覆盖项、项目 TOML、用户 TOML、默认值
 - `ralph init` 项目脚手架和 `ralph completions` 生成
+- 后台 daemon 进程生命周期：PID/status 文件、heartbeat、优雅停止和 SQLite schema 初始化
 
 ## 构建与测试
 

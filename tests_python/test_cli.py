@@ -32,7 +32,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("ralph 0.1.0", stdout)
 
     def test_subcommands_run(self) -> None:
-        for subcommand in ["start", "stop", "status", "watch"]:
+        for subcommand in ["status", "watch"]:
             with self.subTest(subcommand=subcommand):
                 code, stdout, _stderr = self.run_cli(subcommand)
                 self.assertEqual(code, 0)
@@ -74,6 +74,23 @@ class CliTests(unittest.TestCase):
         code, stdout, _stderr = self.run_cli("completions", "bash")
         self.assertEqual(code, 0)
         self.assertIn("complete -F _ralph_complete ralph", stdout)
+
+    def test_start_status_stop_use_daemon_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                code, stdout, _stderr = self.run_cli("start", "--project-dir", tmp)
+                self.assertEqual(code, 0)
+                self.assertIn("start: running", stdout)
+
+                code, stdout, _stderr = self.run_cli("status", "--project-dir", tmp, "--detail")
+                self.assertEqual(code, 0)
+                self.assertIn("status: running with detail", stdout)
+
+                code, stdout, _stderr = self.run_cli("stop", "--project-dir", tmp)
+                self.assertEqual(code, 0)
+                self.assertIn("stop: stopped", stdout)
+            finally:
+                self.run_cli("stop", "--project-dir", tmp)
 
     def test_generate_completion_rejects_unknown_shell(self) -> None:
         with self.assertRaises(ValueError):
