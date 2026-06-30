@@ -9,6 +9,7 @@ import unittest
 
 from ralph.init_project import init_project
 from ralph.planning import (
+    bmad_install_hint,
     integrate_bmad,
     list_planning_workflows,
     read_bmad_pin,
@@ -51,6 +52,7 @@ class PlanningBmadTests(unittest.TestCase):
             assert pin is not None
             self.assertEqual(pin["path"], "_bmad")
             self.assertIn("update_command", pin)
+            self.assertIn("install_method", pin)
 
     def test_list_planning_workflows_finds_sprint_planning(self) -> None:
         source = Path("/workspace/_bmad")
@@ -59,15 +61,45 @@ class PlanningBmadTests(unittest.TestCase):
         workflows = list_planning_workflows(source)
         self.assertTrue(any("sprint-planning" in item for item in workflows))
 
-    def test_submodule_update_hint_matches_documentation(self) -> None:
-        self.assertEqual(submodule_update_hint(), "git submodule update --remote _bmad")
+    def test_validate_bmad_layout_accepts_v6_skills_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bmad = root / "_bmad"
+            (bmad / "bmm").mkdir(parents=True)
+            (bmad / "bmm" / "config.yaml").write_text("project_name: demo\n", encoding="utf-8")
+            (bmad / "core").mkdir()
+            skills = root / ".claude" / "skills" / "bmad-sprint-planning"
+            skills.mkdir(parents=True)
+            self.assertTrue(validate_bmad_layout(bmad, root))
+
+    def test_list_planning_workflows_reads_v6_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bmad = root / "_bmad"
+            (bmad / "bmm" / "config.yaml").parent.mkdir(parents=True)
+            (bmad / "bmm" / "config.yaml").write_text("project_name: demo\n", encoding="utf-8")
+            skill = root / ".claude" / "skills" / "bmad-sprint-planning"
+            skill.mkdir(parents=True)
+            workflows = list_planning_workflows(bmad, root)
+            self.assertIn("bmad-sprint-planning", workflows)
+
+    def test_submodule_update_hint_uses_npx_installer(self) -> None:
+        hint = submodule_update_hint()
+        self.assertIn("npx", hint)
+        self.assertIn("bmad-method", hint)
+        self.assertIn("install", hint)
+        self.assertEqual(hint, bmad_install_hint())
 
     def test_integrate_skips_submodule_add_for_non_git_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             result = integrate_bmad(root)
-            self.assertEqual(result.action, "skipped")
-            self.assertIn("not a git repository", result.message)
+            if shutil.which("npx") or shutil.which("npx.cmd"):
+                self.assertEqual(result.action, "initialized")
+                self.assertTrue(validate_bmad_layout(root / "_bmad", root))
+            else:
+                self.assertEqual(result.action, "skipped")
+                self.assertIn("not a git repository", result.message)
 
     def test_git_init_can_add_local_bmad_submodule(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,11 +126,11 @@ class PlanningBmadTests(unittest.TestCase):
 
             result = integrate_bmad(root, submodule_url=str(bare.resolve()))
             self.assertEqual(result.action, "initialized")
-            self.assertTrue((root / "_bmad" / "bmm" / "workflows").is_dir())
+            self.assertTrue(validate_bmad_layout(root / "_bmad", root))
             pin = read_bmad_pin(root)
             self.assertIsNotNone(pin)
             assert pin is not None
-            self.assertEqual(pin["url"], str(bare))
+            self.assertEqual(pin["install_source"], str(bare))
 
 
 if __name__ == "__main__":

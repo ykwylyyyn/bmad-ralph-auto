@@ -11,7 +11,8 @@ Ralph pairs with [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) for
 | Dependency | Version / Notes |
 |------------|-----------------|
 | Python | 3.11+ |
-| Git | Required for worktree isolation and BMAD submodule |
+| Node.js | 20.12+ (`ralph init` installs BMAD via `npx bmad-method install`) |
+| Git | Required for worktree isolation |
 | Claude Code CLI | Defaults to `claude`; override via environment variable |
 | Cargo (optional) | Only needed for legacy Rust workspace development in this repo |
 
@@ -60,14 +61,23 @@ your-project/
 ├── .ralph/                             # Runtime dir (daemon, DB, worktrees)
 │   ├── logs/
 │   └── worktrees/
-├── _bmad/                              # BMAD-METHOD submodule (auto-added in git repos)
+├── _bmad/                              # BMAD install dir (created by npx bmad-method install)
 ├── _bmad-output/
 │   ├── planning-artifacts/             # PRD, architecture, epics
 │   └── implementation-artifacts/       # sprint-status.yaml, story files
-└── bmad-pin.json                       # BMAD submodule version pin
+├── .claude/skills/                     # BMAD v6+ skills (e.g. bmad-sprint-planning)
+└── .ralph/bmad-pin.json                # BMAD install version record
 ```
 
-If the project is not a git repository, the BMAD submodule step is skipped — add BMAD manually under `_bmad/`.
+`ralph init` runs `npx bmad-method install` to set up BMM + TEA modules. Node.js 20+ is required.
+
+If you previously added the BMAD-METHOD **source repo** as a git submodule (error: `required planning workflow layout is missing`), recover with:
+
+```bash
+npx --yes bmad-method install --directory . --modules bmm,tea --tools claude-code --yes
+```
+
+Or run `ralph init` again (it will attempt recovery automatically).
 
 ### 2. Generate a sprint plan with BMAD
 
@@ -186,7 +196,11 @@ ralph --config /path/to/custom.toml \
 | Variable | Description |
 |----------|-------------|
 | `RALPH_CLAUDE_BIN` | Path to Claude Code executable (default: `claude`) |
-| `RALPH_BMAD_SUBMODULE_URL` | BMAD submodule repo URL (used by `ralph init`) |
+| `RALPH_BMAD_MODULES` | BMAD modules to install (default: `bmm,tea`) |
+| `RALPH_BMAD_TOOLS` | Target IDE tools (default: `claude-code`) |
+| `RALPH_BMAD_NPM_PACKAGE` | npm package name (default: `bmad-method`) |
+| `RALPH_BMAD_INSTALL_CHANNEL` | Set to `next` for `@next` prerelease |
+| `RALPH_BMAD_SUBMODULE_URL` | Advanced/testing only: git submodule instead of npx |
 | `NO_COLOR` | Any non-empty value disables color output |
 
 ## How It Works
@@ -320,7 +334,8 @@ ralph completions bash|zsh|fish
 |---------|-----|
 | `No sprint plan found` | Run BMAD sprint planning first; ensure `_bmad-output/implementation-artifacts/sprint-status.yaml` exists |
 | `claude: command not found` | Install Claude Code CLI or set `RALPH_CLAUDE_BIN` |
-| BMAD submodule failed | Ensure project is a git repo; or clone BMAD manually into `_bmad/` |
+| BMAD layout validation failed | Do not use the BMAD-METHOD source repo as a submodule in `_bmad/`; run `npx bmad-method install --directory . --modules bmm,tea --tools claude-code --yes` |
+| Node.js missing | Install Node 20+, then re-run `ralph init` |
 | Daemon already running | Run `ralph stop` before `ralph start` |
 | Story failed | `ralph diagnose <ID>` for report; fix and `ralph retry <ID>` |
 

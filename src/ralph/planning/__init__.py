@@ -1,5 +1,6 @@
 from .bmad import (
     BmadIntegrationResult,
+    bmad_install_hint,
     integrate_bmad,
     list_planning_workflows,
     read_bmad_pin,
@@ -9,6 +10,7 @@ from .bmad import (
 
 __all__ = [
     "BmadIntegrationResult",
+    "bmad_install_hint",
     "integrate_bmad",
     "list_planning_workflows",
     "read_bmad_pin",
