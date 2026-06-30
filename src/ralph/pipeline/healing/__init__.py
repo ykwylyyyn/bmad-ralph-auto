@@ -1,3 +1,4 @@
+from .diagnose import DiagnoseRequest, FailureAnalyzer, Layer3Diagnose, StoryDiagnoseContext
 from .step_retry import Layer1StepRetry, StepFailure
 from .types import HealingOutcome, HealingOutcomeKind
 from .worker_restart import (
@@ -8,11 +9,15 @@ from .worker_restart import (
 )
 
 __all__ = [
+    "DiagnoseRequest",
+    "FailureAnalyzer",
     "HealingOutcome",
     "HealingOutcomeKind",
     "Layer1StepRetry",
     "Layer2WorkerRestart",
+    "Layer3Diagnose",
     "StepFailure",
+    "StoryDiagnoseContext",
     "WorkerRestartGateway",
     "WorkerRestartRequest",
     "worker_restart_reason",

@@ -34,6 +34,17 @@ CREATE TABLE IF NOT EXISTS healing_attempts (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(story_id) REFERENCES stories(id)
 );
+
+CREATE TABLE IF NOT EXISTS diagnostic_reports (
+    id INTEGER PRIMARY KEY,
+    story_id INTEGER NOT NULL UNIQUE,
+    root_cause TEXT NOT NULL,
+    recommendation TEXT NOT NULL,
+    suggested_fix TEXT NOT NULL,
+    analysis_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(story_id) REFERENCES stories(id)
+);
 """
 
 

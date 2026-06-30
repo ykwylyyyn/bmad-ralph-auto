@@ -9,10 +9,13 @@ from ralph.common.db.store import StateStore, WorkerRecord
 from ralph.common.models import HealingLayer, Story, StoryState, WorkerHealth, WorkerState
 from ralph.config import RalphConfig, resolve_config
 from ralph.pipeline.healing import (
+    DiagnoseRequest,
     HealingOutcomeKind,
     Layer1StepRetry,
     Layer2WorkerRestart,
+    Layer3Diagnose,
     StepFailure,
+    StoryDiagnoseContext,
     WorkerRestartRequest,
     worker_restart_reason,
 )
@@ -255,6 +258,121 @@ class Layer2WorkerRestartTests(unittest.TestCase):
         record = captured.records[0]
         self.assertEqual(record.getMessage(), "healing activated")
         self.assertEqual(record.layer, "worker_restart")
+
+
+class Layer3DiagnoseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.worktrees_root = Path(self.temp_dir.name)
+        self.store = StateStore.open_in_memory()
+        self.store.upsert_story(
+            Story(id=7, title="Diagnose story", state=StoryState.IN_PROGRESS, worker_id=2)
+        )
+        self.store.upsert_worker(
+            WorkerRecord(
+                id=2,
+                state=WorkerState.RUNNING,
+                health=WorkerHealth.DEGRADED,
+                worktree_path="/tmp/worker-2-old",
+            )
+        )
+        self.layer1 = Layer1StepRetry(self.store, retry_limit=1)
+        self.layer2 = Layer2WorkerRestart(self.store, FakeWorkerGateway(self.worktrees_root))
+        self.layer3 = Layer3Diagnose(self.store)
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.temp_dir.cleanup()
+
+    def _escalate_through_layer2(self) -> None:
+        self.layer1.handle_step_failure(StepFailure(story_id=7, worker_id=2, reason="timeout"))
+        escalation = self.layer1.handle_step_failure(
+            StepFailure(story_id=7, worker_id=2, reason="timeout again")
+        )
+        self.assertEqual(escalation.kind, HealingOutcomeKind.ESCALATE_LAYER2)
+        self.layer2.handle_escalation(
+            WorkerRestartRequest(
+                story_id=7,
+                worker_id=2,
+                reason=escalation.reason or "layer 1 exhausted",
+            )
+        )
+        layer3_escalation = self.layer2.handle_restart_failure(
+            WorkerRestartRequest(story_id=7, worker_id=2, reason="fresh worker failed")
+        )
+        self.assertEqual(layer3_escalation.kind, HealingOutcomeKind.ESCALATE_LAYER3)
+
+    def test_escalation_triggers_diagnose_and_marks_story_failed(self) -> None:
+        self._escalate_through_layer2()
+
+        outcome = self.layer3.handle_escalation(
+            DiagnoseRequest(story_id=7, worker_id=2, reason="fresh worker failed"),
+            context=StoryDiagnoseContext(
+                acceptance_criteria=["Must pass tests"],
+                log_excerpt=["ERROR: build failed", "worker exited"],
+            ),
+        )
+
+        self.assertEqual(outcome.kind, HealingOutcomeKind.EXHAUSTED)
+        story = self.store.get_story(7)
+        self.assertEqual(story.state, StoryState.FAILED)
+        self.assertIsNone(story.worker_id)
+
+    def test_diagnose_stores_structured_report(self) -> None:
+        self._escalate_through_layer2()
+
+        self.layer3.handle_escalation(
+            DiagnoseRequest(story_id=7, worker_id=2, reason="fresh worker failed"),
+            context=StoryDiagnoseContext(
+                acceptance_criteria=["Must pass tests"],
+                log_excerpt=["ERROR: build failed"],
+            ),
+        )
+
+        report = self.store.get_diagnostic_report(7)
+        self.assertIn("exhausted all healing layers", report.root_cause)
+        self.assertIn("Review failure patterns", report.recommendation)
+        self.assertEqual(report.suggested_fix, "ralph retry 7")
+        self.assertIn("failure_patterns", report.analysis)
+        self.assertIn("step_retry", report.analysis["healing_layers_attempted"])
+        self.assertIn("worker_restart", report.analysis["healing_layers_attempted"])
+        self.assertIn("diagnose", report.analysis["healing_layers_attempted"])
+
+    def test_diagnose_records_layer3_healing_attempt(self) -> None:
+        self._escalate_through_layer2()
+        self.layer3.handle_escalation(
+            DiagnoseRequest(story_id=7, worker_id=2, reason="fresh worker failed")
+        )
+
+        attempts = self.store.list_healing_attempts(story_id=7)
+        diagnose_attempts = [item for item in attempts if item.layer == HealingLayer.DIAGNOSE]
+        self.assertEqual(len(diagnose_attempts), 1)
+        self.assertEqual(diagnose_attempts[0].reason, "diagnose flow triggered")
+
+    def test_full_layer1_to_layer3_handoff_preserves_healing_history(self) -> None:
+        self._escalate_through_layer2()
+        self.layer3.handle_escalation(
+            DiagnoseRequest(story_id=7, worker_id=2, reason="fresh worker failed")
+        )
+
+        attempts = self.store.list_healing_attempts(story_id=7)
+        layers = {attempt.layer for attempt in attempts}
+        self.assertEqual(
+            layers,
+            {HealingLayer.STEP_RETRY, HealingLayer.WORKER_RESTART, HealingLayer.DIAGNOSE},
+        )
+        self.assertGreaterEqual(len(attempts), 3)
+
+    def test_healing_activated_logs_warn_for_diagnose(self) -> None:
+        self._escalate_through_layer2()
+        with self.assertLogs("ralph.pipeline.healing.diagnose", level="WARNING") as captured:
+            self.layer3.handle_escalation(
+                DiagnoseRequest(story_id=7, worker_id=2, reason="fresh worker failed")
+            )
+
+        record = captured.records[0]
+        self.assertEqual(record.getMessage(), "healing activated")
+        self.assertEqual(record.layer, "diagnose")
 
 
 if __name__ == "__main__":

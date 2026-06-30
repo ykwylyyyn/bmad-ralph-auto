@@ -9,6 +9,8 @@ class HealingOutcomeKind(StrEnum):
     ESCALATE_LAYER2 = "escalate_layer2"
     RESTART = "restart"
     ESCALATE_LAYER3 = "escalate_layer3"
+    DIAGNOSED = "diagnosed"
+    EXHAUSTED = "exhausted"
     SELF_HEALED = "self_healed"
 
 
@@ -22,3 +24,4 @@ class HealingOutcome:
     old_worker_id: int | None = None
     new_worker_id: int | None = None
     worktree_path: str | None = None
+    diagnostic_report_id: int | None = None

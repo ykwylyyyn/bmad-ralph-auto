@@ -71,7 +71,7 @@ development_status:
   epic-4: in-progress
   4-1-self-healing-layer-1-automatic-step-retry: done
   4-2-self-healing-layer-2-worker-restart: done
-  4-3-self-healing-layer-3-diagnose-flow: backlog
+  4-3-self-healing-layer-3-diagnose-flow: done
   4-4-diagnose-command-diagnostic-reports: backlog
   4-5-retry-command-story-re-ingestion: backlog
   epic-4-retrospective: optional
