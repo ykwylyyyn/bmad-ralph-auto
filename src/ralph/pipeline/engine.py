@@ -9,7 +9,7 @@ from ralph.pipeline.dependency_graph import DependencyGraph
 from ralph.pipeline.ingestion import build_dependency_graph
 from ralph.pipeline.scheduler import StoryScheduler
 from ralph.worker.errors import WorkerSpawnError
-from ralph.worker.manager import WorkerCompletion, WorkerManager, story_state_for_result
+from ralph.worker.manager import WorkerExit, WorkerManager, story_state_for_result
 
 _TERMINAL_STORY_STATES = {StoryState.DONE, StoryState.FAILED}
 
@@ -31,7 +31,8 @@ class SpawnFailure:
 class PipelineTickResult:
     pipeline_state: PipelineState
     assignments: list[AssignmentResult] = field(default_factory=list)
-    completions: list[WorkerCompletion] = field(default_factory=list)
+    completions: list[WorkerExit] = field(default_factory=list)
+    worker_failures: list[WorkerExit] = field(default_factory=list)
     spawn_failures: list[SpawnFailure] = field(default_factory=list)
     schedulable_count: int = 0
     active_workers: int = 0
@@ -49,13 +50,19 @@ class PipelineEngine:
         project_dir: Path,
         max_workers: int,
         worktrees_dir: Path,
+        logs_dir: Path | None = None,
         worker_manager: WorkerManager | None = None,
     ) -> None:
         self._store = store
         self._project_dir = project_dir.resolve()
         self._scheduler = StoryScheduler(max_workers)
         self._worktrees_dir = worktrees_dir
-        self._worker_manager = worker_manager or WorkerManager(project_dir, worktrees_dir)
+        self._logs_dir = logs_dir
+        self._worker_manager = worker_manager or WorkerManager(
+            project_dir,
+            worktrees_dir,
+            logs_dir=logs_dir,
+        )
         self._graph: DependencyGraph | None = None
 
     @property
@@ -77,15 +84,58 @@ class PipelineEngine:
     def shutdown(self) -> None:
         self._worker_manager.shutdown()
 
+    def kill_worker(self, worker_id: int) -> bool:
+        exit_event = self._worker_manager.kill_worker(worker_id)
+        if exit_event is None:
+            return False
+
+        story = self._store.get_story(exit_event.story_id)
+        if story.state == StoryState.IN_PROGRESS:
+            self._store.rollback_story_assignment(exit_event.story_id)
+
+        self._store.upsert_worker(
+            WorkerRecord(
+                id=worker_id,
+                state=WorkerState.FAILED,
+                health=WorkerHealth.DEGRADED,
+                worktree_path=str(self._worktrees_dir / f"worker-{worker_id}"),
+                pid=None,
+            )
+        )
+        self._store.record_pipeline_event(
+            "worker_killed",
+            {
+                "worker_id": worker_id,
+                "story_id": exit_event.story_id,
+                "exit_code": exit_event.exit_code,
+            },
+        )
+        return True
+
     def tick(self) -> PipelineTickResult:
-        completions = self._worker_manager.poll_completions()
-        for completion in completions:
-            self._handle_completion(completion)
+        self._sync_worker_health_to_db()
+
+        completions: list[WorkerExit] = []
+        worker_failures: list[WorkerExit] = []
+        for exit_event in self._worker_manager.poll_exits():
+            if exit_event.exit_kind == "completed":
+                self._handle_completion(exit_event)
+                completions.append(exit_event)
+            elif exit_event.exit_kind == "unexpected":
+                self._handle_unexpected_exit(exit_event)
+                worker_failures.append(exit_event)
+            else:
+                self._handle_killed_exit(exit_event)
+                worker_failures.append(exit_event)
 
         stories = self._store.list_stories()
         if not stories:
             self._store.set_pipeline_state(PipelineState.IDLE)
-            return PipelineTickResult(pipeline_state=PipelineState.IDLE, completions=completions)
+            return PipelineTickResult(
+                pipeline_state=PipelineState.IDLE,
+                completions=completions,
+                worker_failures=worker_failures,
+            )
 
         if self._graph is None:
             self._graph = build_dependency_graph(stories)
@@ -139,6 +189,9 @@ class PipelineEngine:
             )
             assignments.append(AssignmentResult(story_id=story.id, worker_id=worker.id))
 
+        self._sync_worker_health_to_db()
+        self._recover_failed_workers()
+
         stories = self._store.list_stories()
         pipeline_state = self._evaluate_pipeline_state(stories)
         self._store.set_pipeline_state(pipeline_state)
@@ -160,6 +213,7 @@ class PipelineEngine:
             pipeline_state=pipeline_state,
             assignments=assignments,
             completions=completions,
+            worker_failures=worker_failures,
             spawn_failures=spawn_failures,
             schedulable_count=len(snapshot.schedulable),
             active_workers=self._scheduler.active_worker_count(workers),
@@ -170,6 +224,12 @@ class PipelineEngine:
     def status_message(self, tick: PipelineTickResult) -> str:
         if tick.pipeline_state == PipelineState.COMPLETE:
             return f"pipeline complete: {tick.completed_stories} stories done"
+        if tick.worker_failures:
+            failure = tick.worker_failures[0]
+            return (
+                f"pipeline running: worker {failure.worker_id} "
+                f"exit ({failure.exit_kind}) for story #{failure.story_id}"
+            )
         if tick.spawn_failures:
             failure = tick.spawn_failures[0]
             return f"pipeline running: spawn failed for story #{failure.story_id} ({failure.reason})"
@@ -183,20 +243,124 @@ class PipelineEngine:
             f"{tick.schedulable_count} schedulable, {tick.active_workers} active workers"
         )
 
-    def _handle_completion(self, completion: WorkerCompletion) -> None:
-        target_state = story_state_for_result(completion.result)
-        story = self._store.get_story(completion.story_id)
+    def _handle_completion(self, exit_event: WorkerExit) -> None:
+        if exit_event.result is None:
+            return
+        target_state = story_state_for_result(exit_event.result)
+        story = self._store.get_story(exit_event.story_id)
         if story.state == StoryState.IN_PROGRESS:
-            self._store.transition_story_state(completion.story_id, target_state)
+            self._store.transition_story_state(exit_event.story_id, target_state)
         self._store.upsert_worker(
             WorkerRecord(
-                id=completion.worker_id,
+                id=exit_event.worker_id,
                 state=WorkerState.IDLE,
                 health=WorkerHealth.HEALTHY,
-                worktree_path=str(self._worktrees_dir / f"worker-{completion.worker_id}"),
+                worktree_path=str(self._worktrees_dir / f"worker-{exit_event.worker_id}"),
                 pid=None,
             )
         )
+
+    def _handle_unexpected_exit(self, exit_event: WorkerExit) -> None:
+        story = self._store.get_story(exit_event.story_id)
+        if story.state == StoryState.IN_PROGRESS:
+            self._store.rollback_story_assignment(exit_event.story_id)
+        self._store.upsert_worker(
+            WorkerRecord(
+                id=exit_event.worker_id,
+                state=WorkerState.FAILED,
+                health=WorkerHealth.DEGRADED,
+                worktree_path=str(self._worktrees_dir / f"worker-{exit_event.worker_id}"),
+                pid=None,
+            )
+        )
+        self._store.record_pipeline_event(
+            "worker_exit_unexpected",
+            {
+                "worker_id": exit_event.worker_id,
+                "story_id": exit_event.story_id,
+                "exit_code": exit_event.exit_code,
+                "log_path": str(exit_event.log_path) if exit_event.log_path else None,
+            },
+        )
+
+    def _handle_killed_exit(self, exit_event: WorkerExit) -> None:
+        story = self._store.get_story(exit_event.story_id)
+        if story.state == StoryState.IN_PROGRESS:
+            self._store.rollback_story_assignment(exit_event.story_id)
+        self._store.upsert_worker(
+            WorkerRecord(
+                id=exit_event.worker_id,
+                state=WorkerState.FAILED,
+                health=WorkerHealth.DEGRADED,
+                worktree_path=str(self._worktrees_dir / f"worker-{exit_event.worker_id}"),
+                pid=None,
+            )
+        )
+        self._store.record_pipeline_event(
+            "worker_killed",
+            {
+                "worker_id": exit_event.worker_id,
+                "story_id": exit_event.story_id,
+                "exit_code": exit_event.exit_code,
+            },
+        )
+
+    def _sync_worker_health_to_db(self) -> None:
+        active_reports = {item.worker_id: item for item in self._worker_manager.check_health()}
+        active_ids = set(active_reports)
+
+        for worker_id, report in active_reports.items():
+            active = self._worker_manager.active_sessions[worker_id]
+            self._store.upsert_worker(
+                WorkerRecord(
+                    id=worker_id,
+                    state=WorkerState.RUNNING,
+                    health=report.health,
+                    worktree_path=str(active.worktree_path),
+                    pid=report.pid,
+                )
+            )
+
+        for worker in self._store.list_workers():
+            if worker.id in active_ids:
+                continue
+            if worker.state == WorkerState.RUNNING:
+                self._store.upsert_worker(
+                    WorkerRecord(
+                        id=worker.id,
+                        state=WorkerState.IDLE,
+                        health=WorkerHealth.DEGRADED,
+                        worktree_path=str(self._worktrees_dir / f"worker-{worker.id}"),
+                        pid=None,
+                    )
+                )
+            elif worker.state == WorkerState.IDLE:
+                self._store.upsert_worker(
+                    WorkerRecord(
+                        id=worker.id,
+                        state=WorkerState.IDLE,
+                        health=WorkerHealth.HEALTHY,
+                        worktree_path=worker.worktree_path,
+                        pid=None,
+                    )
+                )
+
+    def _recover_failed_workers(self) -> None:
+        active_ids = set(self._worker_manager.active_sessions)
+        for worker in self._store.list_workers():
+            if worker.state != WorkerState.FAILED:
+                continue
+            if worker.id in active_ids:
+                continue
+            self._store.upsert_worker(
+                WorkerRecord(
+                    id=worker.id,
+                    state=WorkerState.IDLE,
+                    health=WorkerHealth.DEGRADED,
+                    worktree_path=str(self._worktrees_dir / f"worker-{worker.id}"),
+                    pid=None,
+                )
+            )
 
     def _ensure_worker_pool(self) -> None:
         workers = self._store.list_workers()

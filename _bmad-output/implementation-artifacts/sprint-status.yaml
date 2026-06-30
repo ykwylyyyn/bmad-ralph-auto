@@ -57,7 +57,7 @@ development_status:
   2-4-bmad-artifact-parsing-sprint-plan-ingestion: done
   2-5-pipeline-state-machine-story-scheduler: done
   2-6-worker-spawning-git-worktree-isolation: done
-  2-7-worker-health-monitoring-lifecycle-management: backlog
+  2-7-worker-health-monitoring-lifecycle-management: done
   epic-2-retrospective: optional
 
   # Epic 3: Pipeline Monitoring & Status Display

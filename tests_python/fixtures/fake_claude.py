@@ -4,10 +4,14 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 
 def main() -> int:
     mode = os.environ.get("FAKE_CLAUDE_MODE", "success")
+    if mode == "crash":
+        print("worker crashed", file=sys.stderr)
+        return 137
     if mode == "failure":
         print(
             json.dumps(
@@ -20,6 +24,9 @@ def main() -> int:
             )
         )
         return 1
+    if mode == "hang":
+        time.sleep(30)
+        return 0
     print(
         json.dumps(
             {

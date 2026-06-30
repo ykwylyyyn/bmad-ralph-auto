@@ -6,7 +6,9 @@ from .errors import (
     WorkerSpawnError,
     WorktreeError,
 )
-from .manager import ActiveWorkerSession, WorkerCompletion, WorkerManager, story_state_for_result
+from .health import WorkerHealthReport, classify_exit, pid_is_alive
+from .manager import ActiveWorkerSession, WorkerExit, WorkerManager, story_state_for_result
+from .output_capture import StreamCapture
 from .output import ClaudeResult, parse_claude_output
 from .process import ClaudeOutput, OutputLine, OutputStream, RealClaudeProcess
 from .process_sync import SyncClaudeProcess, SyncClaudeSessionHandle
@@ -27,7 +29,11 @@ __all__ = [
     "SyncClaudeProcess",
     "SyncClaudeSessionHandle",
     "Worker",
-    "WorkerCompletion",
+    "StreamCapture",
+    "WorkerExit",
+    "WorkerHealthReport",
+    "classify_exit",
+    "pid_is_alive",
     "WorkerError",
     "WorkerManager",
     "WorkerSpawnError",
