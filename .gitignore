@@ -1,3 +1,7 @@
+# Python
+__pycache__/
+*.py[cod]
+
 # Build artifacts
 target/
 __pycache__/

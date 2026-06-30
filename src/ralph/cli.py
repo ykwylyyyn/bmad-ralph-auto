@@ -9,8 +9,20 @@ from .common.protocol import Request
 from .config import RalphConfig, default_project_config_path, default_user_config_path, resolve_config
 from .daemon import RuntimePaths, read_status, request_daemon, run_daemon, start_daemon, stop_daemon
 from .init_project import init_project
+from .common.db import StateStore
 from .pipeline.artifact import ArtifactParseError, SprintPlanNotFoundError
 from .pipeline.ingestion import ingest_sprint_plan, persist_ingested_plan
+from .render import Spinner, error_message, resolve_theme, section_border
+from .render.theme import Semantic
+from .diagnose import (
+    DiagnoseLoadError,
+    DiagnoseLoadErrorKind,
+    list_failed_story_ids,
+    load_diagnose_snapshot,
+    render_diagnose,
+)
+from .retry import RetryError, RetryErrorKind, render_retry_confirmation, retry_story
+from .status import load_status_snapshot, render_status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,7 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate diagnostic report for a story",
         description="Generate diagnostic report for a story",
     )
-    diagnose.add_argument("story_id", metavar="STORY_ID", type=_story_id)
+    _add_project_dir_arg(diagnose)
+    diagnose.add_argument("story_id", metavar="STORY_ID", nargs="?", type=_story_id)
     diagnose.set_defaults(handler=_run_diagnose)
 
     retry = subcommands.add_parser(
@@ -54,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Re-feed a story into the pipeline",
         description="Re-feed a story into the pipeline",
     )
+    _add_project_dir_arg(retry)
     retry.add_argument("story_id", metavar="STORY_ID", type=_story_id)
     retry.set_defaults(handler=_run_retry)
 
@@ -88,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    args.theme = resolve_theme(no_color=args.no_color)
     handler = getattr(args, "handler", None)
     if handler is None:
         parser.print_help()
@@ -132,56 +147,163 @@ def _run_start(args: argparse.Namespace) -> None:
     try:
         ingestion = ingest_sprint_plan(args.project_dir)
     except SprintPlanNotFoundError as exc:
-        print("Error: No sprint plan found in project")
-        print("  Ralph looks for sprint plans in _bmad-output/implementation-artifacts/")
-        print(f"  {exc.guidance}")
+        print(
+            error_message(
+                "No sprint plan found in project",
+                detail_lines=[
+                    "Ralph looks for sprint plans in _bmad-output/implementation-artifacts/",
+                    exc.guidance,
+                ],
+                suggestion="Run BMAD sprint planning first, then try ralph start again.",
+                theme=args.theme,
+            )
+        )
         raise SystemExit(1) from exc
     except ArtifactParseError as exc:
-        print(f"Error: {exc}")
+        print(
+            error_message(
+                f"Failed to parse sprint plan ({exc.path})",
+                detail_lines=[exc.detail],
+                suggestion="Fix the artifact file or re-run BMAD sprint planning.",
+                theme=args.theme,
+            )
+        )
         raise SystemExit(1) from exc
 
     paths = RuntimePaths(args.project_dir.resolve())
     paths.ensure()
-    from ralph.common.db import StateStore
-
     store = StateStore.open(paths.database_file)
     try:
         persist_ingested_plan(store, ingestion)
     finally:
         store.close()
 
-    status = start_daemon(args.project_dir, config)
+    with Spinner("Starting daemon", theme=args.theme):
+        status = start_daemon(args.project_dir, config)
+
+    context_semantic = Semantic.ACTIVE if status.state == "starting" else Semantic.HEALTHY
     print(
-        "start: "
-        f"found sprint plan with {ingestion.story_count} stories, "
-        f"{ingestion.dependency_count} dependencies mapped"
+        section_border(
+            "Ralph",
+            context=status.state,
+            context_semantic=context_semantic,
+            theme=args.theme,
+        )
     )
-    print(f"start: {status.state} pid={status.pid} max_workers={status.max_workers}")
+    print(
+        f"  sprint plan: {args.theme.bold(str(ingestion.story_count))} stories, "
+        f"{args.theme.bold(str(ingestion.dependency_count))} dependencies"
+    )
+    print(
+        f"  pid={args.theme.bold(str(status.pid))} "
+        f"max_workers={args.theme.bold(str(status.max_workers))}"
+    )
 
 
 def _run_stop(args: argparse.Namespace) -> None:
-    status = stop_daemon(args.project_dir)
-    print(f"stop: {status.state} pid={status.pid}")
+    with Spinner("Stopping daemon", theme=args.theme):
+        status = stop_daemon(args.project_dir)
+    print(
+        section_border(
+            "Ralph",
+            context=status.state,
+            context_semantic=Semantic.SECONDARY if status.state == "stopped" else Semantic.ACTIVE,
+            theme=args.theme,
+        )
+    )
+    print(f"  pid={args.theme.dim(str(status.pid))}")
 
 
 def _run_status(args: argparse.Namespace) -> None:
-    response = request_daemon(RuntimePaths(args.project_dir.resolve()), Request(type="status"), timeout_secs=1.0)
-    if response.type == "ok" and response.data is not None:
-        status = _status_from_response(response.data)
-    else:
-        status = read_status(args.project_dir)
-    suffix = " with detail" if args.detail else ""
-    print(f"status: {status.state}{suffix} pid={status.pid} max_workers={status.max_workers}")
-    if args.detail and status.message:
-        print(f"message: {status.message}")
+    paths = RuntimePaths(args.project_dir.resolve())
+    snapshot = load_status_snapshot(paths.project_dir, detail=args.detail)
+    if snapshot is None:
+        print(
+            error_message(
+                "No running daemon found",
+                suggestion="Start Ralph first: ralph start",
+                theme=args.theme,
+            )
+        )
+        raise SystemExit(1)
+
+    print(
+        render_status(
+            snapshot,
+            theme=args.theme,
+            project_dir=paths.project_dir,
+            detail=args.detail,
+        )
+    )
 
 
 def _run_diagnose(args: argparse.Namespace) -> None:
-    print(f"diagnose: not yet implemented for story {args.story_id}")
+    project_dir = getattr(args, "project_dir", Path.cwd())
+    if args.story_id is None:
+        failed_ids = list_failed_story_ids(project_dir)
+        if not failed_ids:
+            print("No failed stories to diagnose. All stories completed successfully.")
+            return
+        for story_id in failed_ids:
+            _render_diagnose_for_story(project_dir, story_id, theme=args.theme)
+            print()
+        return
+
+    _render_diagnose_for_story(project_dir, args.story_id, theme=args.theme)
+
+
+def _render_diagnose_for_story(project_dir: Path, story_id: int, *, theme) -> None:
+    result = load_diagnose_snapshot(project_dir, story_id)
+    if isinstance(result, DiagnoseLoadError):
+        if result.kind == DiagnoseLoadErrorKind.STORY_NOT_FOUND:
+            print(
+                error_message(
+                    f"Story #{story_id} not found in current sprint",
+                    suggestion="Run ralph status to see available stories",
+                    theme=theme,
+                )
+            )
+            raise SystemExit(1)
+        return
+    print(render_diagnose(result, theme=theme))
 
 
 def _run_retry(args: argparse.Namespace) -> None:
-    print(f"retry: not yet implemented for story {args.story_id}")
+    project_dir = getattr(args, "project_dir", Path.cwd())
+    result = retry_story(project_dir, args.story_id)
+    if isinstance(result, RetryError):
+        if result.kind == RetryErrorKind.NO_DAEMON:
+            print(
+                error_message(
+                    "No running daemon found",
+                    suggestion="Start Ralph first: ralph start",
+                    theme=args.theme,
+                )
+            )
+            raise SystemExit(1)
+        if result.kind == RetryErrorKind.STORY_NOT_FOUND:
+            print(
+                error_message(
+                    f"Story #{args.story_id} not found in current sprint",
+                    suggestion="Run ralph status to see available stories",
+                    theme=args.theme,
+                )
+            )
+            raise SystemExit(1)
+        if result.kind == RetryErrorKind.INVALID_STATE:
+            print(
+                error_message(
+                    (
+                        f"Story #{args.story_id} is currently {result.state_label} "
+                        "— retry is only available for failed stories"
+                    ),
+                    suggestion="Run ralph status to see available stories",
+                    theme=args.theme,
+                )
+            )
+            raise SystemExit(1)
+        return
+    print(render_retry_confirmation(result, theme=args.theme))
 
 
 def _run_init(args: argparse.Namespace) -> None:
@@ -190,6 +312,20 @@ def _run_init(args: argparse.Namespace) -> None:
     action = "created" if result.created_config else "kept"
     print(f"init: {action} {result.config_path}")
     print(f"init: ready {result.runtime_dir}")
+    if result.bmad is not None:
+        print(f"init: bmad {result.bmad.action} ({result.bmad.message})")
+        if result.bmad.pinned_ref:
+            print(f"init: bmad pinned ref {result.bmad.pinned_ref[:12]}")
+        if result.bmad.planning_workflows:
+            print(f"init: planning workflows available ({len(result.bmad.planning_workflows)})")
+            print("init: use BMAD workflows in _bmad/bmm/workflows for PRD, architecture, UX, and sprint planning")
+        print(f"init: update BMAD with `{_bmad_update_hint()}`")
+
+
+def _bmad_update_hint() -> str:
+    from .planning import submodule_update_hint
+
+    return submodule_update_hint()
 
 
 def _run_watch(_args: argparse.Namespace) -> None:

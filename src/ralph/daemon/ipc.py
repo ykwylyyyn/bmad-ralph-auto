@@ -85,6 +85,8 @@ def request_daemon(paths: RuntimePaths, request: Request, timeout_secs: float = 
         client.connect(address)
         client.sendall((json.dumps(request.to_json_dict()) + "\n").encode("utf-8"))
         response = _read_json_line(client)
+    except (FileNotFoundError, ConnectionRefusedError, OSError):
+        return Response(type="error", message="daemon socket is not available")
     finally:
         client.close()
     return Response(
