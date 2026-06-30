@@ -61,9 +61,9 @@ class CliTests(unittest.TestCase):
         self.assertIn("ralph 0.1.0", stdout)
 
     def test_subcommands_run(self) -> None:
-        code, stdout, _stderr = self.run_cli("watch")
-        self.assertEqual(code, 0)
-        self.assertIn("watch", stdout)
+        code, stdout, _stderr = self.run_cli("watch", "--project-dir", "/tmp/nonexistent-ralph-project")
+        self.assertEqual(code, 1)
+        self.assertIn("No running daemon found", stdout)
 
         code, stdout, _stderr = self.run_cli("status")
         self.assertEqual(code, 1)
