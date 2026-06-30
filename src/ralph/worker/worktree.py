@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-import subprocess
+
+from ralph.common.subprocess_util import run_text_capture
 
 from .errors import WorktreeError
 
@@ -23,10 +24,8 @@ class GitWorktreeManager:
         if worktree_path.exists():
             self.destroy(repo_dir, worktree_path, branch_name)
 
-        result = subprocess.run(
+        result = run_text_capture(
             ["git", "-C", str(repo_dir), "worktree", "add", "-B", branch_name, str(worktree_path)],
-            capture_output=True,
-            text=True,
             check=False,
         )
         if result.returncode != 0:
@@ -36,10 +35,8 @@ class GitWorktreeManager:
 
     def destroy(self, repo_dir: Path, worktree_path: Path, branch_name: str) -> None:
         if worktree_path.exists():
-            result = subprocess.run(
+            result = run_text_capture(
                 ["git", "-C", str(repo_dir), "worktree", "remove", "--force", str(worktree_path)],
-                capture_output=True,
-                text=True,
                 check=False,
             )
             if result.returncode != 0:
@@ -47,18 +44,14 @@ class GitWorktreeManager:
                     f"failed to remove worktree {worktree_path}: {result.stderr.strip()}"
                 )
 
-        subprocess.run(
+        run_text_capture(
             ["git", "-C", str(repo_dir), "branch", "-D", branch_name],
-            capture_output=True,
-            text=True,
             check=False,
         )
 
     def is_git_repo(self, repo_dir: Path) -> bool:
-        result = subprocess.run(
+        result = run_text_capture(
             ["git", "-C", str(repo_dir), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
             check=False,
         )
         return result.returncode == 0 and result.stdout.strip() == "true"
