@@ -86,3 +86,8 @@ development_status:
   epic-6: done
   6-1-ralph-watch-live-dashboard: done
   epic-6-retrospective: optional
+
+  # Epic 7: CI/CD Quality Pipeline
+  epic-7: done
+  7-1-bmad-tea-ci-pipeline: done
+  epic-7-retrospective: optional
