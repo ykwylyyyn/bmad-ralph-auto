@@ -16,6 +16,7 @@ from ralph.planning import (
     submodule_update_hint,
     validate_bmad_layout,
 )
+from ralph.planning.bmad import _extract_installer_error
 
 
 class PlanningBmadTests(unittest.TestCase):
@@ -90,11 +91,22 @@ class PlanningBmadTests(unittest.TestCase):
         self.assertIn("install", hint)
         self.assertEqual(hint, bmad_install_hint())
 
+    def test_extract_installer_error_adds_windows_npm_hint(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="npm error Invalid or unexpected token",
+        )
+        message = _extract_installer_error(result)
+        self.assertIn("Invalid or unexpected token", message)
+        self.assertIn("nvm-windows", message)
+
     def test_integrate_skips_submodule_add_for_non_git_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             result = integrate_bmad(root)
-            if shutil.which("npx") or shutil.which("npx.cmd"):
+            if shutil.which("npx"):
                 self.assertEqual(result.action, "initialized")
                 self.assertTrue(validate_bmad_layout(root / "_bmad", root))
             else:
