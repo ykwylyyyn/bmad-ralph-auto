@@ -337,14 +337,17 @@ def _run_init(args: argparse.Namespace) -> None:
             print(f"init: bmad pinned ref {result.bmad.pinned_ref[:12]}")
         if result.bmad.planning_workflows:
             print(f"init: planning workflows available ({len(result.bmad.planning_workflows)})")
-            print("init: use BMAD workflows in _bmad/bmm/workflows for PRD, architecture, UX, and sprint planning")
-        print(f"init: update BMAD with `{_bmad_update_hint()}`")
+            print(
+                "init: use BMAD skills (bmad-sprint-planning, bmad-create-story, etc.) "
+                "or workflows under _bmad/bmm/workflows"
+            )
+        print(f"init: update BMAD with `{_bmad_update_hint(args.project_dir)}`")
 
 
-def _bmad_update_hint() -> str:
-    from .planning import submodule_update_hint
+def _bmad_update_hint(project_dir: Path | None = None) -> str:
+    from .planning import bmad_install_hint
 
-    return submodule_update_hint()
+    return bmad_install_hint(project_dir)
 
 
 def _run_watch(args: argparse.Namespace) -> None:

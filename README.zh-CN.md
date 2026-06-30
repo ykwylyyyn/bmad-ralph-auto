@@ -11,7 +11,8 @@ Ralph 与 [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) 配合使�
 | 依赖 | 版本 / 说明 |
 |------|-------------|
 | Python | 3.11+ |
-| Git | 用于 worktree 隔离与 BMAD submodule |
+| Node.js | 20.12+（`ralph init` 通过 `npx bmad-method install` 安装 BMAD） |
+| Git | 用于 worktree 隔离 |
 | Claude Code CLI | 默认命令为 `claude`，可通过环境变量覆盖 |
 | Cargo（可选） | 仅在本仓库开发或运行遗留 Rust 测试时需要 |
 
@@ -60,14 +61,23 @@ your-project/
 ├── .ralph/                             # 运行时目录（daemon、数据库、worktree）
 │   ├── logs/
 │   └── worktrees/
-├── _bmad/                              # BMAD-METHOD submodule（git 仓库时自动添加）
+├── _bmad/                              # BMAD 安装目录（由 npx bmad-method install 生成）
 ├── _bmad-output/
 │   ├── planning-artifacts/             # PRD、架构、Epic 等规划产物
 │   └── implementation-artifacts/       # sprint-status.yaml、story 文件
-└── bmad-pin.json                       # BMAD submodule 版本锁定
+├── .claude/skills/                     # BMAD v6+ skills（如 bmad-sprint-planning）
+└── .ralph/bmad-pin.json                # BMAD 安装版本记录
 ```
 
-若项目不是 git 仓库，BMAD submodule 会跳过，需手动将 BMAD 放到 `_bmad/`。
+`ralph init` 会自动运行 `npx bmad-method install` 安装 BMM + TEA 模块。需要已安装 Node.js 20+。
+
+若之前误用 git submodule 安装了 BMAD 源码仓库（会出现 `required planning workflow layout is missing`），重新执行：
+
+```bash
+npx --yes bmad-method install --directory . --modules bmm,tea --tools claude-code --yes
+```
+
+或再次运行 `ralph init`（会自动尝试修复）。
 
 ### 2. 使用 BMAD 生成 Sprint Plan
 
@@ -186,7 +196,11 @@ ralph --config /path/to/custom.toml \
 | 变量 | 说明 |
 |------|------|
 | `RALPH_CLAUDE_BIN` | Claude Code 可执行文件路径（默认 `claude`） |
-| `RALPH_BMAD_SUBMODULE_URL` | BMAD submodule 仓库 URL（`ralph init` 时使用） |
+| `RALPH_BMAD_MODULES` | BMAD 安装模块列表（默认 `bmm,tea`） |
+| `RALPH_BMAD_TOOLS` | BMAD 目标 IDE 工具（默认 `claude-code`） |
+| `RALPH_BMAD_NPM_PACKAGE` | npm 包名（默认 `bmad-method`） |
+| `RALPH_BMAD_INSTALL_CHANNEL` | 设为 `next` 使用 `@next` 预发布版 |
+| `RALPH_BMAD_SUBMODULE_URL` | 仅测试/高级：用 git submodule 代替 npx 安装 |
 | `NO_COLOR` | 设置任意非空值时禁用颜色输出 |
 
 ## 工作方式
@@ -320,7 +334,8 @@ ralph completions bash|zsh|fish
 |------|------|
 | `No sprint plan found` | 先运行 BMAD sprint planning，确保 `_bmad-output/implementation-artifacts/sprint-status.yaml` 存在 |
 | `claude: command not found` | 安装 Claude Code CLI 或设置 `RALPH_CLAUDE_BIN` |
-| BMAD submodule 失败 | 确认项目是 git 仓库；或手动克隆 BMAD 到 `_bmad/` |
+| BMAD 布局校验失败 | 勿将 BMAD-METHOD 源码仓库作为 submodule 放入 `_bmad/`；运行 `npx bmad-method install --directory . --modules bmm,tea --tools claude-code --yes` |
+| 缺少 Node.js | 安装 Node 20+ 后重新 `ralph init` |
 | Daemon 已在运行 | 使用 `ralph stop` 后再 `ralph start` |
 | Story 失败 | `ralph diagnose <ID>` 查看报告，修复后 `ralph retry <ID>` |
 
