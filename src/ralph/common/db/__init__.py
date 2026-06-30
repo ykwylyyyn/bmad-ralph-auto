@@ -3,6 +3,7 @@ from .errors import (
     ConcurrentModificationError,
     DatabaseError,
     InvalidTransitionError,
+    StoryAssignmentError,
     StoryNotFoundError,
     WorkerNotFoundError,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "PipelineSnapshot",
     "SCHEMA_SQL",
     "StateStore",
+    "StoryAssignmentError",
     "StoryNotFoundError",
     "WorkerNotFoundError",
     "WorkerRecord",

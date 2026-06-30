@@ -7,10 +7,16 @@ from pathlib import Path
 import sqlite3
 from typing import Self
 
-from ralph.common.models import HealingAttempt, HealingLayer, Story, StoryState, WorkerHealth, WorkerState
+from ralph.common.models import HealingAttempt, HealingLayer, PipelineState, Story, StoryState, WorkerHealth, WorkerState
 from ralph.pipeline.state import is_valid_transition
 
-from .errors import ConcurrentModificationError, InvalidTransitionError, StoryNotFoundError, WorkerNotFoundError
+from .errors import (
+    ConcurrentModificationError,
+    InvalidTransitionError,
+    StoryAssignmentError,
+    StoryNotFoundError,
+    WorkerNotFoundError,
+)
 from .schema import apply_schema
 
 DEFAULT_HEALING_RETENTION_DAYS = 7
@@ -183,6 +189,116 @@ class StateStore:
                 raise ConcurrentModificationError(story_id, from_state.value)
 
         return self.get_story(story_id)
+
+    def assign_story_to_worker(self, story_id: int, worker_id: int) -> Story:
+        now = _now()
+        with self._connection:
+            row = self._connection.execute(
+                "SELECT state, worker_id FROM stories WHERE id = ?",
+                (story_id,),
+            ).fetchone()
+            if row is None:
+                raise StoryNotFoundError(story_id)
+
+            from_state = StoryState(row["state"])
+            if from_state != StoryState.QUEUED:
+                raise StoryAssignmentError(story_id, f"story must be queued (current: {from_state.value})")
+
+            worker = self._connection.execute(
+                "SELECT id FROM workers WHERE id = ?",
+                (worker_id,),
+            ).fetchone()
+            if worker is None:
+                raise WorkerNotFoundError(worker_id)
+
+            if not is_valid_transition(StoryState.QUEUED, StoryState.IN_PROGRESS):
+                raise InvalidTransitionError(story_id, from_state.value, StoryState.IN_PROGRESS.value)
+
+            cursor = self._connection.execute(
+                """
+                UPDATE stories
+                SET state = ?, worker_id = ?, updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (StoryState.IN_PROGRESS.value, worker_id, now, story_id, from_state.value),
+            )
+            if cursor.rowcount != 1:
+                raise ConcurrentModificationError(story_id, from_state.value)
+
+        return self.get_story(story_id)
+
+    def set_story_worker(self, story_id: int, worker_id: int | None) -> Story:
+        now = _now()
+        with self._connection:
+            cursor = self._connection.execute(
+                "UPDATE stories SET worker_id = ?, updated_at = ? WHERE id = ?",
+                (worker_id, now, story_id),
+            )
+            if cursor.rowcount != 1:
+                raise StoryNotFoundError(story_id)
+        return self.get_story(story_id)
+
+    def get_pipeline_state(self) -> PipelineState:
+        row = self._connection.execute(
+            "SELECT state FROM pipeline_state WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return PipelineState.IDLE
+        return PipelineState(row["state"])
+
+    def set_pipeline_state(self, state: PipelineState) -> None:
+        now = _now()
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO pipeline_state (id, state, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    state = excluded.state,
+                    updated_at = excluded.updated_at
+                """,
+                (state.value, now),
+            )
+
+    def record_pipeline_event(self, event_type: str, payload: dict[str, object] | None = None) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO pipeline_events (event_type, payload, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (event_type, json.dumps(payload or {}), _now()),
+            )
+
+    def list_pipeline_events(self, event_type: str | None = None) -> list[dict[str, object]]:
+        if event_type is None:
+            rows = self._connection.execute(
+                "SELECT event_type, payload, created_at FROM pipeline_events ORDER BY id"
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                """
+                SELECT event_type, payload, created_at
+                FROM pipeline_events
+                WHERE event_type = ?
+                ORDER BY id
+                """,
+                (event_type,),
+            ).fetchall()
+        events: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            events.append(
+                {
+                    "event_type": row["event_type"],
+                    "payload": payload,
+                    "created_at": row["created_at"],
+                }
+            )
+        return events
 
     def upsert_worker(self, worker: WorkerRecord) -> WorkerRecord:
         now = _now()

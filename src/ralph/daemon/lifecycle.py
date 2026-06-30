@@ -12,6 +12,7 @@ import time
 from ralph.common.db import StateStore
 from ralph.common.protocol import Request
 from ralph.config import RalphConfig
+from ralph.pipeline.engine import PipelineEngine
 
 from .ipc import IpcServer, request_daemon, status_response
 from .runtime import RuntimePaths
@@ -157,6 +158,12 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
     paths.ensure()
     store = StateStore.open(paths.database_file)
     recovered = store.load_snapshot()
+    engine = PipelineEngine(
+        store,
+        max_workers=config.effective().max_workers or 5,
+        worktrees_dir=paths.worktrees_dir,
+    )
+    pipeline_state = engine.initialize()
     started_at = _now()
     pid = os.getpid()
     paths.pid_file.write_text(str(pid), encoding="utf-8")
@@ -168,9 +175,11 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
         if recovered.stories or recovered.workers
         else ""
     )
+    status_message = recovery_message or f"pipeline {pipeline_state.value}"
 
     try:
         while not should_stop and not paths.stop_file.exists():
+            tick = engine.tick()
             status = DaemonStatus(
                 state="running",
                 pid=pid,
@@ -178,13 +187,12 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
                 max_workers=config.effective().max_workers or 5,
                 started_at=started_at,
                 heartbeat_at=_now(),
-                message=recovery_message,
+                message=engine.status_message(tick),
             )
             _write_status(paths, status)
             should_stop = ipc.poll(lambda request: _handle_request(request, status, paths))
             if not should_stop:
                 time.sleep(heartbeat_secs)
-            recovery_message = ""
     finally:
         store.close()
         ipc.close()

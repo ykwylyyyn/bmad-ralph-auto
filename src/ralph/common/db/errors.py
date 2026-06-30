@@ -32,3 +32,9 @@ class ConcurrentModificationError(DatabaseError):
         super().__init__(f"story {story_id} state changed concurrently (expected {expected_state})")
         self.story_id = story_id
         self.expected_state = expected_state
+
+
+class StoryAssignmentError(DatabaseError):
+    def __init__(self, story_id: int, message: str) -> None:
+        super().__init__(f"cannot assign story {story_id}: {message}")
+        self.story_id = story_id
