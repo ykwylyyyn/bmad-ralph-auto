@@ -99,10 +99,10 @@ _bmad-output/implementation-artifacts/
 
 ### 3. Configure Claude Code
 
-Ensure `claude` is on your PATH, or set:
+See [Claude Code setup](#claude-code-setup). **Ralph workers require permission bypass** in non-interactive `-p` mode.
 
 ```bash
-export RALPH_CLAUDE_BIN=/path/to/claude
+export RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"
 ```
 
 ### 4. Start the pipeline
@@ -129,6 +129,127 @@ ralph diagnose [STORY_ID] # Diagnostic report for failed stories
 ralph retry STORY_ID      # Re-feed a corrected story into the pipeline
 ralph stop                # Graceful daemon shutdown
 ```
+
+## Claude Code setup
+
+Ralph and BMAD both depend on the **Claude Code CLI**. Interactive BMAD work and autonomous Ralph workers need different permission settings.
+
+### Install
+
+```bash
+npm install -g @anthropic-ai/claude-code
+claude --version
+claude update
+```
+
+See https://code.claude.com/docs/en/setup for the native installer.
+
+### Authentication
+
+```bash
+claude auth login              # Claude subscription
+claude auth login --console    # Anthropic Console API billing
+claude auth status
+```
+
+Optional API key: `export ANTHROPIC_API_KEY=sk-ant-...`
+
+### Interactive mode (BMAD manual steps)
+
+```bash
+cd /path/to/your-project
+claude
+```
+
+| Scenario | Command |
+|----------|---------|
+| Default | `claude` |
+| Plan-only (read-only) | `claude --permission-mode plan` |
+| Auto-approve safe ops | `claude --permission-mode auto` |
+| Skip all prompts | `claude --dangerously-skip-permissions` |
+
+Press **Shift+Tab** in interactive mode to cycle permission modes.
+
+### Permission modes
+
+| Mode | Description | Use when |
+|------|-------------|----------|
+| `default` | Prompt for every write/exec | Learning, high-risk changes |
+| `acceptEdits` | Auto-approve file edits | Day-to-day dev |
+| `plan` | Read-only analysis | Architecture review |
+| `auto` | Classifier approves safe ops | Efficient interactive dev |
+| `bypassPermissions` | Skip prompts (`--dangerously-skip-permissions`) | **Isolated env / Ralph workers only** |
+
+> **Security**: `bypassPermissions` lets Claude write files and run shell commands without confirmation. Ralph runs workers in isolated git worktrees, but do not use bypass on production checkouts.
+
+### settings.json
+
+User-level (`~/.claude/settings.json`):
+
+```json
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": ["Bash(git *)", "Bash(pytest *)", "Bash(make *)"]
+  }
+}
+```
+
+For Ralph workers (user-level):
+
+```json
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  }
+}
+```
+
+Project-level (`.claude/settings.json`):
+
+```json
+{
+  "permissions": {
+    "defaultMode": "auto"
+  }
+}
+```
+
+### Ralph worker environment variables
+
+Ralph spawns Claude non-interactively (`claude -p --output-format json`). **Permission bypass is required** or workers hang waiting for prompts.
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `RALPH_CLAUDE_BIN` | Claude executable path | `/usr/local/bin/claude` |
+| `RALPH_CLAUDE_ARGS` | Extra CLI flags for workers | `--dangerously-skip-permissions` |
+
+```bash
+export RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"
+ralph start
+```
+
+Effective worker command:
+
+```text
+claude --dangerously-skip-permissions -p --output-format json "<story prompt>"
+```
+
+### Verify
+
+```bash
+claude --dangerously-skip-permissions -p 'Reply with JSON: {"ok": true}'
+tail -50 .ralph/logs/worker-1.log   # after ralph start
+```
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `claude: command not found` | Install CLI or set `RALPH_CLAUDE_BIN` |
+| Worker hangs with no output | Set `RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"` |
+| Auth failure | Run `claude auth login` |
+| Bypass blocked on Linux | Do not run as root/sudo |
 
 ## Configuration
 
@@ -196,6 +317,7 @@ ralph --config /path/to/custom.toml \
 | Variable | Description |
 |----------|-------------|
 | `RALPH_CLAUDE_BIN` | Path to Claude Code executable (default: `claude`) |
+| `RALPH_CLAUDE_ARGS` | Extra Claude CLI flags for workers (recommended: `--dangerously-skip-permissions`) |
 | `RALPH_BMAD_MODULES` | BMAD modules to install (default: `bmm,tea`) |
 | `RALPH_BMAD_TOOLS` | Target IDE tools (default: `claude-code`) |
 | `RALPH_BMAD_NPM_PACKAGE` | npm package name (default: `bmad-method`) |
@@ -333,7 +455,8 @@ ralph completions bash|zsh|fish
 | Symptom | Fix |
 |---------|-----|
 | `No sprint plan found` | Run BMAD sprint planning first; ensure `_bmad-output/implementation-artifacts/sprint-status.yaml` exists |
-| `claude: command not found` | Install Claude Code CLI or set `RALPH_CLAUDE_BIN` |
+| `claude: command not found` | Install Claude Code CLI or set `RALPH_CLAUDE_BIN`; see [Claude Code setup](#claude-code-setup) |
+| Worker hangs / no output | Set `RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"` |
 | BMAD layout validation failed | Do not use the BMAD-METHOD source repo as a submodule in `_bmad/`; run `npx bmad-method install --directory . --modules bmm,tea --tools claude-code --yes` |
 | `npm error Invalid or unexpected token` | Usually a broken Node/npm install on Windows (common with older nvm-windows). Reinstall [Node 20 LTS](https://nodejs.org), or upgrade nvm-windows to 1.1.11+ and run `nvm uninstall <ver>` then `nvm install <ver>` in an **Administrator** PowerShell; verify with `node -v` and `npm -v` before `ralph init` |
 | Node.js missing | Install Node 20+, then re-run `ralph init` |

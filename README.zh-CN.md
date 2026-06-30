@@ -99,10 +99,11 @@ _bmad-output/implementation-artifacts/
 
 ### 3. 配置 Claude Code
 
-确保 `claude` 命令在 PATH 中可用，或设置环境变量：
+完成 [Claude Code 配置](#claude-code-配置)（安装、登录、权限模式）。**Ralph 自主 worker 必须跳过权限确认**，否则 `-p` 非交互模式会卡住。
 
-```bash
-export RALPH_CLAUDE_BIN=/path/to/claude
+```powershell
+# Windows PowerShell — Ralph worker 推荐（在 ralph start 之前设置）
+$env:RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"
 ```
 
 ### 4. 启动流水线
@@ -129,6 +130,200 @@ ralph diagnose [STORY_ID] # 失败 story 的诊断报告
 ralph retry STORY_ID      # 将修正后的 story 重新送入流水线
 ralph stop                # 优雅停止 daemon
 ```
+
+## Claude Code 配置
+
+Ralph 与 BMAD 均依赖 **Claude Code CLI**。人工执行 BMAD 工作流与 Ralph 自主 worker 的配置方式不同。
+
+### 安装
+
+```powershell
+# 方式 1：官方安装器（推荐）
+# 见 https://code.claude.com/docs/en/setup
+
+# 方式 2：npm 全局安装
+npm install -g @anthropic-ai/claude-code
+
+# 验证
+claude --version
+claude update          # 升级到最新版
+```
+
+### 登录与认证
+
+```powershell
+# 交互式登录（Claude 订阅账号）
+claude auth login
+
+# 使用 Anthropic Console API 计费
+claude auth login --console
+
+# 检查登录状态
+claude auth status
+claude auth status --text
+```
+
+**API Key 方式**（CI / 脚本，可选）：
+
+```powershell
+$env:ANTHROPIC_API_KEY="sk-ant-..."
+claude auth status
+```
+
+> 首次 `claude auth login` 会打开浏览器完成 OAuth；无图形界面环境可用 `claude setup-token` 生成长效 token。
+
+### 启动 Claude Code（交互式 — 用于 BMAD 人工步骤）
+
+在项目根目录启动，以便加载 `.claude/skills/` 中的 BMAD skills：
+
+```powershell
+cd D:\project\xxx
+claude
+```
+
+常用启动参数：
+
+| 场景 | 命令 |
+|------|------|
+| 默认交互 | `claude` |
+| 带初始提示 | `claude "帮我做 sprint planning"` |
+| 计划模式（只读分析） | `claude --permission-mode plan` |
+| 自动审批安全操作 | `claude --permission-mode auto` |
+| 跳过所有权限确认 | `claude --dangerously-skip-permissions` |
+
+交互模式中按 **Shift+Tab** 可循环切换权限模式（default → acceptEdits → plan → auto → bypassPermissions）。
+
+### 权限模式说明
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| `default` | 每次写文件/执行命令都需确认 | 学习、高风险改动 |
+| `acceptEdits` | 自动批准文件编辑，命令仍需确认 | 日常开发 |
+| `plan` | 只读分析，不修改文件 | 架构评审、方案讨论 |
+| `auto` | 分类器自动批准安全操作，危险操作仍拦截 | 交互式高效开发（推荐） |
+| `bypassPermissions` | 跳过权限确认（`--dangerously-skip-permissions`） | **仅隔离环境 / Ralph worker** |
+
+> **安全提示**：`bypassPermissions` 会允许 Claude 自动写文件和执行 shell 命令。Ralph 已在 **git worktree 隔离目录** 中运行 worker，但仍请勿在生产主目录直接使用 bypass 模式。
+
+### settings.json 持久化配置
+
+用户级（所有项目生效）：
+
+```powershell
+# Windows
+notepad $env:USERPROFILE\.claude\settings.json
+```
+
+```json
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(git *)",
+      "Bash(pytest *)",
+      "Bash(make *)"
+    ]
+  }
+}
+```
+
+项目级（仅当前仓库，可提交到 git）：
+
+```json
+// .claude/settings.json
+{
+  "permissions": {
+    "defaultMode": "auto"
+  }
+}
+```
+
+**Ralph 自主 worker 推荐**（用户级 `settings.json`，无需每次设环境变量）：
+
+```json
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  }
+}
+```
+
+或使用 `dontAsk` + 白名单（CI 风格，更严格）：
+
+```json
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Bash(git *)",
+      "Bash(pytest *)",
+      "Bash(pip *)",
+      "Edit",
+      "Write",
+      "Read"
+    ]
+  }
+}
+```
+
+### Ralph worker 专用环境变量
+
+Ralph 以非交互方式调用 Claude（等效于 `claude -p --output-format json`）。**无人值守时必须配置权限**，否则 worker 会在权限提示处挂起并最终失败。
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `RALPH_CLAUDE_BIN` | Claude 可执行文件路径 | `C:\Users\you\.local\bin\claude.exe` |
+| `RALPH_CLAUDE_ARGS` | 追加到 `claude` 的 CLI 参数 | `--dangerously-skip-permissions` |
+
+**Windows PowerShell（当前会话）**：
+
+```powershell
+$env:RALPH_CLAUDE_BIN="claude"
+$env:RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"
+ralph start
+```
+
+**Windows 永久设置（用户环境变量）**：
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+    "RALPH_CLAUDE_ARGS", "--dangerously-skip-permissions", "User")
+```
+
+**Linux / macOS**：
+
+```bash
+export RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"
+# 或较安全的 auto 模式（需 Claude Code 2.1.111+）
+export RALPH_CLAUDE_ARGS="--permission-mode auto"
+ralph start
+```
+
+**等效命令行**（Ralph 实际 spawn 的形态）：
+
+```text
+claude --dangerously-skip-permissions -p --output-format json "<story prompt>"
+```
+
+### 验证 Claude Code 可被 Ralph 调用
+
+```powershell
+# 1. 非交互 + 跳过权限（与 Ralph worker 相同）
+claude --dangerously-skip-permissions -p "Reply with JSON: {\"ok\": true}"
+
+# 2. 查看 worker 日志（ralph start 后）
+Get-Content .ralph\logs\worker-1.log -Tail 50
+```
+
+### 常见问题
+
+| 现象 | 处理 |
+|------|------|
+| `claude: command not found` | 安装 Claude Code 并加入 PATH，或设置 `RALPH_CLAUDE_BIN` |
+| Worker 卡住无输出 | 设置 `RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"` |
+| `auth` 失败 | 运行 `claude auth login`，检查网络与订阅/API 额度 |
+| Linux 下 bypass 被拒绝 | 不要用 `sudo` 运行；bypass 禁止 root 执行 |
+| 想限制 worker 权限 | 用 `--permission-mode dontAsk` + `settings.json` 的 `permissions.allow` 白名单 |
 
 ## 完整开发示例：用户管理系统
 
@@ -253,10 +448,11 @@ make test-all
 ```powershell
 cd D:\project\user-mgmt
 
-# 确保 Claude Code CLI 可用
+# 配置 Claude worker 权限（必须，否则 worker 会卡住）
+$env:RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"
 claude --version
 
-# 启动流水线（自动摄入 sprint plan）
+# 启动流水线
 ralph start
 
 # 实时监控
@@ -375,6 +571,7 @@ ralph --config /path/to/custom.toml \
 | 变量 | 说明 |
 |------|------|
 | `RALPH_CLAUDE_BIN` | Claude Code 可执行文件路径（默认 `claude`） |
+| `RALPH_CLAUDE_ARGS` | 追加给 worker 的 Claude CLI 参数（推荐 `--dangerously-skip-permissions`） |
 | `RALPH_BMAD_MODULES` | BMAD 安装模块列表（默认 `bmm,tea`） |
 | `RALPH_BMAD_TOOLS` | BMAD 目标 IDE 工具（默认 `claude-code`） |
 | `RALPH_BMAD_NPM_PACKAGE` | npm 包名（默认 `bmad-method`） |
@@ -512,7 +709,8 @@ ralph completions bash|zsh|fish
 | 现象 | 处理 |
 |------|------|
 | `No sprint plan found` | 先运行 BMAD sprint planning，确保 `_bmad-output/implementation-artifacts/sprint-status.yaml` 存在 |
-| `claude: command not found` | 安装 Claude Code CLI 或设置 `RALPH_CLAUDE_BIN` |
+| `claude: command not found` | 安装 Claude Code CLI 或设置 `RALPH_CLAUDE_BIN`；见 [Claude Code 配置](#claude-code-配置) |
+| Worker 卡住 / 无输出 | 设置 `RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"` |
 | BMAD 布局校验失败 | 勿将 BMAD-METHOD 源码仓库作为 submodule 放入 `_bmad/`；运行 `npx bmad-method install --directory . --modules bmm,tea --tools claude-code --yes` |
 | `npm error Invalid or unexpected token` | 多为 Windows 上 Node/npm 安装损坏（常见于旧版 nvm-windows）。重装 [Node 20 LTS](https://nodejs.org)，或升级 nvm-windows 至 1.1.11+ 后以**管理员** PowerShell 执行 `nvm uninstall <版本>` 再 `nvm install <版本>`；用 `node -v`、`npm -v` 验证后再 `ralph init` |
 | 缺少 Node.js | 安装 Node 20+ 后重新 `ralph init` |

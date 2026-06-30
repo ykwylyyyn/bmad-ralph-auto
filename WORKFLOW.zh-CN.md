@@ -214,6 +214,11 @@ development_status:
 | 更新 `sprint-status.yaml` 状态 | `ralph status` / `ralph watch` 监控进度 |
 | Story 失败后人工修复 | `ralph diagnose` + `ralph retry` |
 
+**Claude Code 配置要点**：
+
+- **人工 BMAD 步骤**：在项目目录运行 `claude`，推荐 `--permission-mode auto` 或 `acceptEdits`
+- **Ralph worker**：必须设置 `RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"`（见 [README.zh-CN.md](README.zh-CN.md#claude-code-配置)）
+
 ```text
 BMAD 规划与 Story 规格（人工 on-the-loop）
         │
