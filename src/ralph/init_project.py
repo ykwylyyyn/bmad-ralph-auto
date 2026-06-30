@@ -38,8 +38,6 @@ def init_project(
         config_path.write_text(render_config(RalphConfig(max_workers=max_workers)), encoding="utf-8")
         created_config = True
 
-    from .planning.bmad import ensure_planning_output_dirs
-
     ensure_planning_output_dirs(root)
     bmad_result = integrate_bmad(root) if integrate_bmad_submodule else None
 
