@@ -55,6 +55,19 @@ CREATE TABLE IF NOT EXISTS diagnostic_reports (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(story_id) REFERENCES stories(id)
 );
+
+CREATE TABLE IF NOT EXISTS pipeline_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    state TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_events (
+    id INTEGER PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 

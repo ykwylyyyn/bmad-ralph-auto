@@ -1,4 +1,26 @@
+from .async_store import AsyncStateStore
+from .errors import (
+    ConcurrentModificationError,
+    DatabaseError,
+    InvalidTransitionError,
+    StoryAssignmentError,
+    StoryNotFoundError,
+    WorkerNotFoundError,
+)
 from .schema import SCHEMA_SQL, apply_schema
-from .store import StateStore, WorkerRecord
+from .store import PipelineSnapshot, StateStore, WorkerRecord
 
-__all__ = ["SCHEMA_SQL", "StateStore", "WorkerRecord", "apply_schema"]
+__all__ = [
+    "AsyncStateStore",
+    "ConcurrentModificationError",
+    "DatabaseError",
+    "InvalidTransitionError",
+    "PipelineSnapshot",
+    "SCHEMA_SQL",
+    "StateStore",
+    "StoryAssignmentError",
+    "StoryNotFoundError",
+    "WorkerNotFoundError",
+    "WorkerRecord",
+    "apply_schema",
+]

@@ -7,6 +7,7 @@ VALID_TRANSITIONS = {
     (StoryState.IN_PROGRESS, StoryState.IN_REVIEW),
     (StoryState.IN_PROGRESS, StoryState.BLOCKED),
     (StoryState.IN_PROGRESS, StoryState.FAILED),
+    (StoryState.IN_PROGRESS, StoryState.QUEUED),
     (StoryState.IN_REVIEW, StoryState.DONE),
     (StoryState.BLOCKED, StoryState.IN_PROGRESS),
     (StoryState.FAILED, StoryState.QUEUED),

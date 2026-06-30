@@ -60,7 +60,15 @@ class DaemonLifecycleTests(unittest.TestCase):
                     connection.close()
                 self.assertEqual(
                     [row[0] for row in rows],
-                    ["diagnostic_reports", "healing_attempts", "stories", "story_dependencies", "workers"],
+                    [
+                        "diagnostic_reports",
+                        "healing_attempts",
+                        "pipeline_events",
+                        "pipeline_state",
+                        "stories",
+                        "story_dependencies",
+                        "workers",
+                    ],
                 )
             finally:
                 stop_daemon(root)

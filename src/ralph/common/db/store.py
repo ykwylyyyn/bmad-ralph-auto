@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 import sqlite3
 from typing import Self
 
@@ -11,14 +11,25 @@ from ralph.common.models import (
     DiagnosticReport,
     HealingAttempt,
     HealingLayer,
+    PipelineState,
     Story,
     StoryState,
     WorkerHealth,
     WorkerState,
 )
+from ralph.pipeline.state import is_valid_transition
 
-from .errors import StoryNotFoundError, WorkerNotFoundError
+from .errors import (
+    ConcurrentModificationError,
+    InvalidTransitionError,
+    StoryAssignmentError,
+    StoryNotFoundError,
+    WorkerNotFoundError,
+)
 from .schema import apply_schema
+
+DEFAULT_HEALING_RETENTION_DAYS = 7
+DEFAULT_HEALING_MAX_ROWS = 10_000
 
 
 @dataclass(slots=True)
@@ -30,8 +41,14 @@ class WorkerRecord:
     pid: int | None = None
 
 
+@dataclass(slots=True)
+class PipelineSnapshot:
+    stories: list[Story]
+    workers: list[WorkerRecord]
+
+
 class StateStore:
-    """Synchronous SQLite persistence for stories and healing attempts."""
+    """Synchronous SQLite persistence for pipeline state."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
@@ -62,6 +79,10 @@ class StateStore:
         apply_schema(self._connection)
         _ensure_story_columns(self._connection)
         self._connection.commit()
+
+    def is_wal_enabled(self) -> bool:
+        row = self._connection.execute("PRAGMA journal_mode").fetchone()
+        return row is not None and str(row[0]).lower() == "wal"
 
     def upsert_story(self, story: Story) -> Story:
         now = _now()
@@ -151,6 +172,33 @@ class StateStore:
         dependency_map = self.list_story_dependencies()
         return [_story_from_row(row, dependency_map.get(row["id"], [])) for row in rows]
 
+    def transition_story_state(self, story_id: int, to_state: StoryState) -> Story:
+        now = _now()
+        with self._connection:
+            row = self._connection.execute(
+                "SELECT state FROM stories WHERE id = ?",
+                (story_id,),
+            ).fetchone()
+            if row is None:
+                raise StoryNotFoundError(story_id)
+
+            from_state = StoryState(row["state"])
+            if not is_valid_transition(from_state, to_state):
+                raise InvalidTransitionError(story_id, from_state.value, to_state.value)
+
+            cursor = self._connection.execute(
+                """
+                UPDATE stories
+                SET state = ?, updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (to_state.value, now, story_id, from_state.value),
+            )
+            if cursor.rowcount != 1:
+                raise ConcurrentModificationError(story_id, from_state.value)
+
+        return self.get_story(story_id)
+
     def set_story_state(self, story_id: int, state: StoryState) -> Story:
         now = _now()
         with self._connection:
@@ -192,17 +240,141 @@ class StateStore:
     def assign_story_to_worker(self, story_id: int, worker_id: int) -> Story:
         now = _now()
         with self._connection:
+            row = self._connection.execute(
+                "SELECT state, worker_id FROM stories WHERE id = ?",
+                (story_id,),
+            ).fetchone()
+            if row is None:
+                raise StoryNotFoundError(story_id)
+
+            from_state = StoryState(row["state"])
+            if from_state != StoryState.QUEUED:
+                raise StoryAssignmentError(story_id, f"story must be queued (current: {from_state.value})")
+
+            worker = self._connection.execute(
+                "SELECT id FROM workers WHERE id = ?",
+                (worker_id,),
+            ).fetchone()
+            if worker is None:
+                raise WorkerNotFoundError(worker_id)
+
+            if not is_valid_transition(StoryState.QUEUED, StoryState.IN_PROGRESS):
+                raise InvalidTransitionError(story_id, from_state.value, StoryState.IN_PROGRESS.value)
+
             cursor = self._connection.execute(
                 """
                 UPDATE stories
                 SET state = ?, worker_id = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND state = ?
                 """,
-                (StoryState.IN_PROGRESS.value, worker_id, now, story_id),
+                (StoryState.IN_PROGRESS.value, worker_id, now, story_id, from_state.value),
+            )
+            if cursor.rowcount != 1:
+                raise ConcurrentModificationError(story_id, from_state.value)
+
+        return self.get_story(story_id)
+
+    def rollback_story_assignment(self, story_id: int) -> Story:
+        now = _now()
+        with self._connection:
+            row = self._connection.execute(
+                "SELECT state FROM stories WHERE id = ?",
+                (story_id,),
+            ).fetchone()
+            if row is None:
+                raise StoryNotFoundError(story_id)
+
+            from_state = StoryState(row["state"])
+            if not is_valid_transition(from_state, StoryState.QUEUED):
+                raise InvalidTransitionError(story_id, from_state.value, StoryState.QUEUED.value)
+
+            cursor = self._connection.execute(
+                """
+                UPDATE stories
+                SET state = ?, worker_id = NULL, updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (StoryState.QUEUED.value, now, story_id, from_state.value),
+            )
+            if cursor.rowcount != 1:
+                raise ConcurrentModificationError(story_id, from_state.value)
+        return self.get_story(story_id)
+
+    def clear_story_worker(self, story_id: int) -> Story:
+        return self.set_story_worker(story_id, None)
+
+    def set_story_worker(self, story_id: int, worker_id: int | None) -> Story:
+        now = _now()
+        with self._connection:
+            cursor = self._connection.execute(
+                "UPDATE stories SET worker_id = ?, updated_at = ? WHERE id = ?",
+                (worker_id, now, story_id),
             )
             if cursor.rowcount != 1:
                 raise StoryNotFoundError(story_id)
         return self.get_story(story_id)
+
+    def get_pipeline_state(self) -> PipelineState:
+        row = self._connection.execute(
+            "SELECT state FROM pipeline_state WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return PipelineState.IDLE
+        return PipelineState(row["state"])
+
+    def set_pipeline_state(self, state: PipelineState) -> None:
+        now = _now()
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO pipeline_state (id, state, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    state = excluded.state,
+                    updated_at = excluded.updated_at
+                """,
+                (state.value, now),
+            )
+
+    def record_pipeline_event(self, event_type: str, payload: dict[str, object] | None = None) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO pipeline_events (event_type, payload, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (event_type, json.dumps(payload or {}), _now()),
+            )
+
+    def list_pipeline_events(self, event_type: str | None = None) -> list[dict[str, object]]:
+        if event_type is None:
+            rows = self._connection.execute(
+                "SELECT event_type, payload, created_at FROM pipeline_events ORDER BY id"
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                """
+                SELECT event_type, payload, created_at
+                FROM pipeline_events
+                WHERE event_type = ?
+                ORDER BY id
+                """,
+                (event_type,),
+            ).fetchall()
+        events: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            events.append(
+                {
+                    "event_type": row["event_type"],
+                    "payload": payload,
+                    "created_at": row["created_at"],
+                }
+            )
+        return events
 
     def upsert_worker(self, worker: WorkerRecord) -> WorkerRecord:
         now = _now()
@@ -352,6 +524,42 @@ class StateStore:
             raise StoryNotFoundError(story_id)
         return _diagnostic_report_from_row(row)
 
+    def load_snapshot(self) -> PipelineSnapshot:
+        return PipelineSnapshot(stories=self.list_stories(), workers=self.list_workers())
+
+    def prune_healing_attempts(
+        self,
+        *,
+        retention_days: int = DEFAULT_HEALING_RETENTION_DAYS,
+        max_rows: int = DEFAULT_HEALING_MAX_ROWS,
+    ) -> int:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        with self._connection:
+            self._connection.execute(
+                "DELETE FROM healing_attempts WHERE created_at < ?",
+                (cutoff,),
+            )
+            deleted_by_age = self._connection.total_changes
+
+            row = self._connection.execute("SELECT COUNT(*) FROM healing_attempts").fetchone()
+            total = int(row[0]) if row is not None else 0
+            if total > max_rows:
+                overflow = total - max_rows
+                self._connection.execute(
+                    """
+                    DELETE FROM healing_attempts
+                    WHERE id IN (
+                        SELECT id FROM healing_attempts
+                        ORDER BY id ASC
+                        LIMIT ?
+                    )
+                    """,
+                    (overflow,),
+                )
+                deleted_by_age += self._connection.total_changes
+
+        return deleted_by_age
+
 
 def _story_from_row(row: sqlite3.Row, dependencies: list[int] | None = None) -> Story:
     criteria_raw = row["acceptance_criteria"] if "acceptance_criteria" in row.keys() else "[]"
@@ -368,9 +576,9 @@ def _story_from_row(row: sqlite3.Row, dependencies: list[int] | None = None) -> 
         key=story_key or "",
         title=row["title"],
         state=StoryState(row["state"]),
+        worker_id=row["worker_id"],
         dependencies=list(dependencies or []),
         acceptance_criteria=[str(item) for item in acceptance_criteria],
-        worker_id=row["worker_id"],
     )
 
 
@@ -406,7 +614,10 @@ def _now() -> str:
 
 
 def _ensure_story_columns(connection: sqlite3.Connection) -> None:
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(stories)").fetchall()}
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(stories)").fetchall()
+    }
     if "story_key" not in columns:
         connection.execute("ALTER TABLE stories ADD COLUMN story_key TEXT")
     if "acceptance_criteria" not in columns:

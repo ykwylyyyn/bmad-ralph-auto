@@ -7,7 +7,7 @@ import unittest
 
 from ralph.common.db import StateStore
 from ralph.common.models import Story, StoryState
-from ralph.pipeline import ingest_sprint_plan, persist_ingested_plan
+from ralph.pipeline.ingestion import ingest_sprint_plan, persist_ingested_plan
 from ralph.pipeline.artifact import ArtifactParseError, SprintPlanNotFoundError
 from ralph.pipeline.dependency_graph import DependencyGraph
 
