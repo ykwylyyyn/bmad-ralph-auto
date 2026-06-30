@@ -127,6 +127,18 @@ class StateStore:
                 raise StoryNotFoundError(story_id)
         return self.get_story(story_id)
 
+    def reset_healing_state(self, story_id: int) -> Story:
+        with self._connection:
+            self._connection.execute(
+                "DELETE FROM healing_attempts WHERE story_id = ?",
+                (story_id,),
+            )
+            self._connection.execute(
+                "DELETE FROM diagnostic_reports WHERE story_id = ?",
+                (story_id,),
+            )
+        return self.requeue_story(story_id)
+
     def assign_story_to_worker(self, story_id: int, worker_id: int) -> Story:
         now = _now()
         with self._connection:

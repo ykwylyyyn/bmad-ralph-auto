@@ -18,6 +18,7 @@ from .diagnose import (
     load_diagnose_snapshot,
     render_diagnose,
 )
+from .retry import RetryError, RetryErrorKind, render_retry_confirmation, retry_story
 from .status import load_status_snapshot, render_status
 
 
@@ -63,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Re-feed a story into the pipeline",
         description="Re-feed a story into the pipeline",
     )
+    _add_project_dir_arg(retry)
     retry.add_argument("story_id", metavar="STORY_ID", type=_story_id)
     retry.set_defaults(handler=_run_retry)
 
@@ -226,7 +228,41 @@ def _render_diagnose_for_story(project_dir: Path, story_id: int, *, theme) -> No
 
 
 def _run_retry(args: argparse.Namespace) -> None:
-    print(f"retry: not yet implemented for story {args.story_id}")
+    project_dir = getattr(args, "project_dir", Path.cwd())
+    result = retry_story(project_dir, args.story_id)
+    if isinstance(result, RetryError):
+        if result.kind == RetryErrorKind.NO_DAEMON:
+            print(
+                error_message(
+                    "No running daemon found",
+                    suggestion="Start Ralph first: ralph start",
+                    theme=args.theme,
+                )
+            )
+            raise SystemExit(1)
+        if result.kind == RetryErrorKind.STORY_NOT_FOUND:
+            print(
+                error_message(
+                    f"Story #{args.story_id} not found in current sprint",
+                    suggestion="Run ralph status to see available stories",
+                    theme=args.theme,
+                )
+            )
+            raise SystemExit(1)
+        if result.kind == RetryErrorKind.INVALID_STATE:
+            print(
+                error_message(
+                    (
+                        f"Story #{args.story_id} is currently {result.state_label} "
+                        "— retry is only available for failed stories"
+                    ),
+                    suggestion="Run ralph status to see available stories",
+                    theme=args.theme,
+                )
+            )
+            raise SystemExit(1)
+        return
+    print(render_retry_confirmation(result, theme=args.theme))
 
 
 def _run_init(args: argparse.Namespace) -> None:

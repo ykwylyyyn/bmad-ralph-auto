@@ -7,7 +7,20 @@ import tempfile
 import unittest
 
 from ralph.cli import generate_completion, main
+from ralph.common.db.store import StateStore
+from ralph.common.models import Story, StoryState
+from ralph.config import RalphConfig
+from ralph.daemon import start_daemon, stop_daemon
 from ralph.init_project import init_project
+
+
+def _seed_failed_story_for_cli(root: Path) -> None:
+    init_project(root, max_workers=2)
+    store = StateStore.open(root / ".ralph" / "ralph.db")
+    try:
+        store.upsert_story(Story(id=7, title="Auth login flow", state=StoryState.FAILED))
+    finally:
+        store.close()
 
 
 class CliTests(unittest.TestCase):
@@ -53,9 +66,15 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("Story #99 not found", stdout)
 
-        code, stdout, _stderr = self.run_cli("retry", "7")
-        self.assertEqual(code, 0)
-        self.assertIn("story 7", stdout)
+        with tempfile.TemporaryDirectory() as tmp:
+            _seed_failed_story_for_cli(Path(tmp))
+            start_daemon(Path(tmp), RalphConfig(max_workers=2))
+            try:
+                code, stdout, _stderr = self.run_cli("retry", "7", "--project-dir", tmp)
+                self.assertEqual(code, 0)
+                self.assertIn("retrying", stdout)
+            finally:
+                stop_daemon(Path(tmp))
 
     def test_init_creates_config_and_runtime_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

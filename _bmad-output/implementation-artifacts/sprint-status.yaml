@@ -68,12 +68,12 @@ development_status:
   epic-3-retrospective: optional
 
   # Epic 4: Self-Healing & Error Recovery
-  epic-4: in-progress
+  epic-4: done
   4-1-self-healing-layer-1-automatic-step-retry: done
   4-2-self-healing-layer-2-worker-restart: done
   4-3-self-healing-layer-3-diagnose-flow: done
   4-4-diagnose-command-diagnostic-reports: done
-  4-5-retry-command-story-re-ingestion: backlog
+  4-5-retry-command-story-re-ingestion: done
   epic-4-retrospective: optional
 
   # Epic 5: Planning Integration
