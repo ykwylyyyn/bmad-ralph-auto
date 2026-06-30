@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from ralph.config import RalphConfig
+from ralph.common.db import StateStore
 from ralph.common.protocol import Request
 from ralph.daemon import RuntimePaths, read_status, request_daemon, start_daemon, stop_daemon
 
@@ -43,13 +44,19 @@ class DaemonLifecycleTests(unittest.TestCase):
             finally:
                 stop_daemon(root)
 
-    def test_start_initializes_sqlite_schema(self) -> None:
+    def test_start_initializes_sqlite_schema_with_wal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             try:
                 start_daemon(root, RalphConfig(max_workers=1))
                 db_path = root / ".ralph" / "ralph.db"
                 self.assertTrue(db_path.exists())
+
+                store = StateStore.open(db_path)
+                try:
+                    self.assertTrue(store.is_wal_enabled())
+                finally:
+                    store.close()
 
                 connection = sqlite3.connect(db_path)
                 try:

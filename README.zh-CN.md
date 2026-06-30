@@ -60,6 +60,7 @@ ralph completions bash|zsh|fish
 - `ralph init` 项目脚手架和 `ralph completions` 生成
 - 后台 daemon 进程生命周期：PID/status 文件、heartbeat、优雅停止和 SQLite schema 初始化
 - daemon `status` 和 `stop` 请求的 JSON IPC
+- SQLite 状态持久化层：原子 story 转换、崩溃恢复、WAL 并发读、healing 记录清理
 
 ## 构建与测试
 

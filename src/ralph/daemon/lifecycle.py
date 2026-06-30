@@ -5,12 +5,11 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import sqlite3
 import subprocess
 import sys
 import time
 
-from ralph.common.db import apply_schema
+from ralph.common.db import StateStore
 from ralph.common.protocol import Request
 from ralph.config import RalphConfig
 
@@ -32,7 +31,8 @@ class DaemonStatus:
 def start_daemon(project_dir: str | Path, config: RalphConfig) -> DaemonStatus:
     paths = RuntimePaths(Path(project_dir).resolve())
     paths.ensure()
-    _initialize_database(paths)
+    store = _initialize_database(paths)
+    store.close()
 
     current = read_status(paths.project_dir)
     if current.state == "running" and current.pid is not None and _pid_exists(current.pid):
@@ -155,13 +155,19 @@ def read_status(project_dir: str | Path) -> DaemonStatus:
 def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: float = 0.2) -> int:
     paths = RuntimePaths(Path(project_dir).resolve())
     paths.ensure()
-    _initialize_database(paths)
+    store = StateStore.open(paths.database_file)
+    recovered = store.load_snapshot()
     started_at = _now()
     pid = os.getpid()
     paths.pid_file.write_text(str(pid), encoding="utf-8")
     ipc = IpcServer(paths)
     ipc.start()
     should_stop = False
+    recovery_message = (
+        f"recovered {len(recovered.stories)} stories and {len(recovered.workers)} workers from database"
+        if recovered.stories or recovered.workers
+        else ""
+    )
 
     try:
         while not should_stop and not paths.stop_file.exists():
@@ -172,12 +178,15 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
                 max_workers=config.effective().max_workers or 5,
                 started_at=started_at,
                 heartbeat_at=_now(),
+                message=recovery_message,
             )
             _write_status(paths, status)
             should_stop = ipc.poll(lambda request: _handle_request(request, status, paths))
             if not should_stop:
                 time.sleep(heartbeat_secs)
+            recovery_message = ""
     finally:
+        store.close()
         ipc.close()
         _remove_if_exists(paths.pid_file)
         _remove_if_exists(paths.stop_file)
@@ -225,13 +234,8 @@ def _handle_request(request: Request, status: DaemonStatus, paths: RuntimePaths)
     )
 
 
-def _initialize_database(paths: RuntimePaths) -> None:
-    connection = sqlite3.connect(paths.database_file)
-    try:
-        apply_schema(connection)
-        connection.commit()
-    finally:
-        connection.close()
+def _initialize_database(paths: RuntimePaths) -> StateStore:
+    return StateStore.open(paths.database_file)
 
 
 def _write_status(paths: RuntimePaths, status: DaemonStatus) -> None:
