@@ -14,6 +14,21 @@ from ralph.daemon import start_daemon, stop_daemon
 from ralph.init_project import init_project
 
 
+def _write_minimal_sprint_plan(root: Path) -> None:
+    artifacts = root / "_bmad-output" / "implementation-artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "sprint-status.yaml").write_text(
+        "story_location: _bmad-output/implementation-artifacts\n"
+        "development_status:\n"
+        "  1-1-demo-story: backlog\n",
+        encoding="utf-8",
+    )
+    (artifacts / "1-1-demo-story.md").write_text(
+        "# Story 1.1: Demo Story\n\n## Acceptance Criteria\n\n1. **AC1:** demo",
+        encoding="utf-8",
+    )
+
+
 def _seed_failed_story_for_cli(root: Path) -> None:
     init_project(root, max_workers=2)
     store = StateStore.open(root / ".ralph" / "ralph.db")
@@ -107,11 +122,13 @@ class CliTests(unittest.TestCase):
 
     def test_start_status_stop_use_daemon_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            _write_minimal_sprint_plan(Path(tmp))
             try:
                 code, stdout, _stderr = self.run_cli("start", "--project-dir", tmp)
                 self.assertEqual(code, 0)
                 self.assertIn("✓ Starting daemon done", stdout)
                 self.assertIn("※ Ralph", stdout)
+                self.assertIn("sprint plan:", stdout)
 
                 code, stdout, _stderr = self.run_cli("status", "--project-dir", tmp)
                 self.assertEqual(code, 0)
@@ -125,8 +142,16 @@ class CliTests(unittest.TestCase):
             finally:
                 self.run_cli("stop", "--project-dir", tmp)
 
+    def test_start_without_sprint_plan_shows_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            code, stdout, _stderr = self.run_cli("start", "--project-dir", tmp)
+            self.assertEqual(code, 1)
+            self.assertIn("No sprint plan found in project", stdout)
+            self.assertIn("_bmad-output/implementation-artifacts", stdout)
+
     def test_no_color_suppresses_ansi_codes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            _write_minimal_sprint_plan(Path(tmp))
             code, stdout, _stderr = self.run_cli("--no-color", "start", "--project-dir", tmp)
             self.assertEqual(code, 0)
             self.assertNotIn("\033[", stdout)

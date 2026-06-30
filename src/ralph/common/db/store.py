@@ -60,46 +60,96 @@ class StateStore:
 
     def initialize(self) -> None:
         apply_schema(self._connection)
+        _ensure_story_columns(self._connection)
         self._connection.commit()
 
     def upsert_story(self, story: Story) -> Story:
         now = _now()
+        criteria_json = json.dumps(story.acceptance_criteria)
         with self._connection:
             self._connection.execute(
                 """
-                INSERT INTO stories (id, title, state, worker_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO stories (
+                    id, story_key, title, state, worker_id, acceptance_criteria, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
+                    story_key = excluded.story_key,
                     title = excluded.title,
                     state = excluded.state,
                     worker_id = excluded.worker_id,
+                    acceptance_criteria = excluded.acceptance_criteria,
                     updated_at = excluded.updated_at
                 """,
                 (
                     story.id,
+                    story.key or None,
                     story.title,
                     story.state.value,
                     story.worker_id,
+                    criteria_json,
                     now,
                     now,
                 ),
             )
         return self.get_story(story.id)
 
+    def replace_story_dependencies(self, dependencies: dict[int, list[int]]) -> None:
+        with self._connection:
+            self._connection.execute("DELETE FROM story_dependencies")
+            for story_id, dep_ids in dependencies.items():
+                for dep_id in dep_ids:
+                    self._connection.execute(
+                        """
+                        INSERT INTO story_dependencies (story_id, depends_on_id)
+                        VALUES (?, ?)
+                        """,
+                        (story_id, dep_id),
+                    )
+
+    def list_story_dependencies(self, story_id: int | None = None) -> dict[int, list[int]]:
+        if story_id is None:
+            rows = self._connection.execute(
+                "SELECT story_id, depends_on_id FROM story_dependencies ORDER BY story_id, depends_on_id"
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                """
+                SELECT story_id, depends_on_id
+                FROM story_dependencies
+                WHERE story_id = ?
+                ORDER BY depends_on_id
+                """,
+                (story_id,),
+            ).fetchall()
+
+        mapping: dict[int, list[int]] = {}
+        for row in rows:
+            mapping.setdefault(row["story_id"], []).append(row["depends_on_id"])
+        return mapping
+
     def get_story(self, story_id: int) -> Story:
         row = self._connection.execute(
-            "SELECT id, title, state, worker_id FROM stories WHERE id = ?",
+            """
+            SELECT id, story_key, title, state, worker_id, acceptance_criteria
+            FROM stories WHERE id = ?
+            """,
             (story_id,),
         ).fetchone()
         if row is None:
             raise StoryNotFoundError(story_id)
-        return _story_from_row(row)
+        dependencies = self.list_story_dependencies(story_id).get(story_id, [])
+        return _story_from_row(row, dependencies)
 
     def list_stories(self) -> list[Story]:
         rows = self._connection.execute(
-            "SELECT id, title, state, worker_id FROM stories ORDER BY id"
+            """
+            SELECT id, story_key, title, state, worker_id, acceptance_criteria
+            FROM stories ORDER BY id
+            """
         ).fetchall()
-        return [_story_from_row(row) for row in rows]
+        dependency_map = self.list_story_dependencies()
+        return [_story_from_row(row, dependency_map.get(row["id"], [])) for row in rows]
 
     def set_story_state(self, story_id: int, state: StoryState) -> Story:
         now = _now()
@@ -303,11 +353,23 @@ class StateStore:
         return _diagnostic_report_from_row(row)
 
 
-def _story_from_row(row: sqlite3.Row) -> Story:
+def _story_from_row(row: sqlite3.Row, dependencies: list[int] | None = None) -> Story:
+    criteria_raw = row["acceptance_criteria"] if "acceptance_criteria" in row.keys() else "[]"
+    try:
+        acceptance_criteria = json.loads(criteria_raw or "[]")
+    except json.JSONDecodeError:
+        acceptance_criteria = []
+    if not isinstance(acceptance_criteria, list):
+        acceptance_criteria = []
+
+    story_key = row["story_key"] if "story_key" in row.keys() else ""
     return Story(
         id=row["id"],
+        key=story_key or "",
         title=row["title"],
         state=StoryState(row["state"]),
+        dependencies=list(dependencies or []),
+        acceptance_criteria=[str(item) for item in acceptance_criteria],
         worker_id=row["worker_id"],
     )
 
@@ -341,3 +403,13 @@ def _diagnostic_report_from_row(row: sqlite3.Row) -> DiagnosticReport:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_story_columns(connection: sqlite3.Connection) -> None:
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(stories)").fetchall()}
+    if "story_key" not in columns:
+        connection.execute("ALTER TABLE stories ADD COLUMN story_key TEXT")
+    if "acceptance_criteria" not in columns:
+        connection.execute(
+            "ALTER TABLE stories ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '[]'"
+        )

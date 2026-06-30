@@ -9,6 +9,9 @@ from .common.protocol import Request
 from .config import RalphConfig, default_project_config_path, default_user_config_path, resolve_config
 from .daemon import RuntimePaths, read_status, request_daemon, run_daemon, start_daemon, stop_daemon
 from .init_project import init_project
+from .common.db import StateStore
+from .pipeline.artifact import ArtifactParseError, SprintPlanNotFoundError
+from .pipeline.ingestion import ingest_sprint_plan, persist_ingested_plan
 from .render import Spinner, error_message, resolve_theme, section_border
 from .render.theme import Semantic
 from .diagnose import (
@@ -141,6 +144,40 @@ def _resolved_config(args: argparse.Namespace) -> RalphConfig:
 def _run_start(args: argparse.Namespace) -> None:
     config = _resolved_config(args)
     init_project(args.project_dir, max_workers=config.max_workers or 5)
+    try:
+        ingestion = ingest_sprint_plan(args.project_dir)
+    except SprintPlanNotFoundError as exc:
+        print(
+            error_message(
+                "No sprint plan found in project",
+                detail_lines=[
+                    "Ralph looks for sprint plans in _bmad-output/implementation-artifacts/",
+                    exc.guidance,
+                ],
+                suggestion="Run BMAD sprint planning first, then try ralph start again.",
+                theme=args.theme,
+            )
+        )
+        raise SystemExit(1) from exc
+    except ArtifactParseError as exc:
+        print(
+            error_message(
+                f"Failed to parse sprint plan ({exc.path})",
+                detail_lines=[exc.detail],
+                suggestion="Fix the artifact file or re-run BMAD sprint planning.",
+                theme=args.theme,
+            )
+        )
+        raise SystemExit(1) from exc
+
+    paths = RuntimePaths(args.project_dir.resolve())
+    paths.ensure()
+    store = StateStore.open(paths.database_file)
+    try:
+        persist_ingested_plan(store, ingestion)
+    finally:
+        store.close()
+
     with Spinner("Starting daemon", theme=args.theme):
         status = start_daemon(args.project_dir, config)
 
@@ -152,6 +189,10 @@ def _run_start(args: argparse.Namespace) -> None:
             context_semantic=context_semantic,
             theme=args.theme,
         )
+    )
+    print(
+        f"  sprint plan: {args.theme.bold(str(ingestion.story_count))} stories, "
+        f"{args.theme.bold(str(ingestion.dependency_count))} dependencies"
     )
     print(
         f"  pid={args.theme.bold(str(status.pid))} "

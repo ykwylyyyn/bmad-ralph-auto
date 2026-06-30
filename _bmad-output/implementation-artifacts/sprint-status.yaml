@@ -79,5 +79,5 @@ development_status:
   # Epic 5: Planning Integration
   epic-5: in-progress
   5-1-bmad-submodule-integration-planning-workflow-access: done
-  5-2-sprint-plan-generation-pipeline-artifact-handoff: backlog
+  5-2-sprint-plan-generation-pipeline-artifact-handoff: done
   epic-5-retrospective: optional
