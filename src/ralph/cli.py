@@ -271,6 +271,20 @@ def _run_init(args: argparse.Namespace) -> None:
     action = "created" if result.created_config else "kept"
     print(f"init: {action} {result.config_path}")
     print(f"init: ready {result.runtime_dir}")
+    if result.bmad is not None:
+        print(f"init: bmad {result.bmad.action} ({result.bmad.message})")
+        if result.bmad.pinned_ref:
+            print(f"init: bmad pinned ref {result.bmad.pinned_ref[:12]}")
+        if result.bmad.planning_workflows:
+            print(f"init: planning workflows available ({len(result.bmad.planning_workflows)})")
+            print("init: use BMAD workflows in _bmad/bmm/workflows for PRD, architecture, UX, and sprint planning")
+        print(f"init: update BMAD with `{_bmad_update_hint()}`")
+
+
+def _bmad_update_hint() -> str:
+    from .planning import submodule_update_hint
+
+    return submodule_update_hint()
 
 
 def _run_watch(_args: argparse.Namespace) -> None:

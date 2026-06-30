@@ -86,6 +86,8 @@ class CliTests(unittest.TestCase):
             self.assertTrue((root / "ralph.toml").exists())
             self.assertTrue((root / ".ralph" / "logs").is_dir())
             self.assertTrue((root / ".ralph" / "worktrees").is_dir())
+            self.assertTrue((root / "_bmad-output" / "planning-artifacts").is_dir())
+            self.assertTrue((root / "_bmad-output" / "implementation-artifacts").is_dir())
 
     def test_init_keeps_existing_config_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
