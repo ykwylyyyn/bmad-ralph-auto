@@ -11,6 +11,7 @@ from .daemon import RuntimePaths, read_status, request_daemon, run_daemon, start
 from .init_project import init_project
 from .render import Spinner, error_message, resolve_theme, section_border
 from .render.theme import Semantic
+from .status import load_status_snapshot, render_status_overview
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -163,15 +164,24 @@ def _run_stop(args: argparse.Namespace) -> None:
 
 
 def _run_status(args: argparse.Namespace) -> None:
-    response = request_daemon(RuntimePaths(args.project_dir.resolve()), Request(type="status"), timeout_secs=1.0)
-    if response.type == "ok" and response.data is not None:
-        status = _status_from_response(response.data)
-    else:
-        status = read_status(args.project_dir)
-    suffix = " with detail" if args.detail else ""
-    print(f"status: {status.state}{suffix} pid={status.pid} max_workers={status.max_workers}")
-    if args.detail and status.message:
-        print(f"message: {status.message}")
+    paths = RuntimePaths(args.project_dir.resolve())
+    response = request_daemon(paths, Request(type="status"), timeout_secs=1.0)
+    snapshot = load_status_snapshot(str(paths.project_dir))
+    if snapshot is None:
+        print(
+            error_message(
+                "No running daemon found",
+                suggestion="Start Ralph first: ralph start",
+                theme=args.theme,
+            )
+        )
+        raise SystemExit(1)
+
+    print(render_status_overview(snapshot, theme=args.theme))
+    if args.detail:
+        detail_message = response.message if response.type == "ok" else snapshot.health_label
+        if detail_message:
+            print(f"  {args.theme.dim(detail_message)}")
 
 
 def _run_diagnose(args: argparse.Namespace) -> None:

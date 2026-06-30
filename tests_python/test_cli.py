@@ -32,11 +32,13 @@ class CliTests(unittest.TestCase):
         self.assertIn("ralph 0.1.0", stdout)
 
     def test_subcommands_run(self) -> None:
-        for subcommand in ["status", "watch"]:
-            with self.subTest(subcommand=subcommand):
-                code, stdout, _stderr = self.run_cli(subcommand)
-                self.assertEqual(code, 0)
-                self.assertIn(subcommand, stdout)
+        code, stdout, _stderr = self.run_cli("watch")
+        self.assertEqual(code, 0)
+        self.assertIn("watch", stdout)
+
+        code, stdout, _stderr = self.run_cli("status")
+        self.assertEqual(code, 1)
+        self.assertIn("No running daemon found", stdout)
 
     def test_story_id_commands_require_numeric_id(self) -> None:
         code, _stdout, stderr = self.run_cli("diagnose", "abc")
@@ -83,9 +85,10 @@ class CliTests(unittest.TestCase):
                 self.assertIn("✓ Starting daemon done", stdout)
                 self.assertIn("※ Ralph", stdout)
 
-                code, stdout, _stderr = self.run_cli("status", "--project-dir", tmp, "--detail")
+                code, stdout, _stderr = self.run_cli("status", "--project-dir", tmp)
                 self.assertEqual(code, 0)
-                self.assertIn("status: running with detail", stdout)
+                self.assertIn("※ Ralph", stdout)
+                self.assertIn("healthy", stdout)
 
                 code, stdout, _stderr = self.run_cli("stop", "--project-dir", tmp)
                 self.assertEqual(code, 0)

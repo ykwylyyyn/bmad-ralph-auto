@@ -8,6 +8,90 @@ from .theme import Semantic, Theme, visible_length
 from .width import layout_width
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+PROGRESS_BAR_WIDTH = 30
+
+
+def health_line(text: str, *, theme: Theme | None = None, semantic: Semantic = Semantic.DEFAULT) -> str:
+    active_theme = theme or Theme()
+    if semantic == Semantic.DEFAULT:
+        return f"  {text}"
+    return f"  {active_theme.semantic(text, semantic)}"
+
+
+def progress_bar(
+    completed: int,
+    total: int,
+    *,
+    theme: Theme | None = None,
+    label: str = "Stories",
+) -> list[str]:
+    active_theme = theme or Theme()
+    percentage = 0 if total <= 0 else round((completed / total) * 100)
+    filled = 0 if total <= 0 else round((completed / total) * PROGRESS_BAR_WIDTH)
+    filled = min(PROGRESS_BAR_WIDTH, max(0, filled))
+    empty = PROGRESS_BAR_WIDTH - filled
+    bar = f"{active_theme.magenta('█' * filled)}{active_theme.dim('░' * empty)}"
+    return [
+        f"  {active_theme.bold(label)}",
+        f"  {bar}  {percentage}% completed",
+    ]
+
+
+def summary_line(counts: dict[str, int], *, theme: Theme | None = None) -> str:
+    active_theme = theme or Theme()
+    order = [
+        ("completed", active_theme.green),
+        ("running", active_theme.yellow),
+        ("retrying", active_theme.yellow),
+        ("restarting", active_theme.yellow),
+        ("diagnosing", active_theme.yellow),
+        ("queued", active_theme.dim),
+        ("blocked", active_theme.dim),
+        ("failed", active_theme.red),
+    ]
+    segments: list[str] = []
+    for name, styler in order:
+        value = counts.get(name, 0)
+        if value <= 0:
+            continue
+        segments.append(f"{active_theme.bold(str(value))} {styler(name)}")
+    if not segments:
+        return "  0 stories loaded"
+    return "  " + "  ".join(segments)
+
+
+def completion_summary(
+    *,
+    success_percent: int,
+    self_healed: int,
+    failed: int,
+    runtime: str,
+    worker_count: int,
+    failed_stories: list[int],
+    theme: Theme | None = None,
+    width: int | None = None,
+) -> list[str]:
+    active_theme = theme or Theme()
+    if success_percent >= 95:
+        success_text = active_theme.green(f"Success: {success_percent}%")
+    elif success_percent >= 80:
+        success_text = active_theme.yellow(f"Success: {success_percent}%")
+    else:
+        success_text = active_theme.red(f"Success: {success_percent}%")
+
+    healed_text = active_theme.yellow(f"{self_healed} self-healed")
+    failed_text = active_theme.red(f"{failed} failed")
+    lines = [
+        section_border("Summary", width=width, theme=active_theme),
+        f"  {success_text} — {healed_text}, {failed_text}",
+        f"  Runtime: {runtime} across {active_theme.bold(str(worker_count))} workers",
+    ]
+    for story_id in failed_stories:
+        command = active_theme.bold(f"ralph diagnose {story_id}")
+        lines.append(
+            f"  Failed: Story #{story_id} — run {command} for details"
+        )
+    return lines
 
 
 def section_border(
