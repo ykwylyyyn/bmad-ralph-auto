@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 
+from ralph.common.subprocess_util import run_text_capture
+
 BMAD_SUBMODULE_DIR = "_bmad"
 DEFAULT_BMAD_SUBMODULE_URL = "https://github.com/bmad-code-org/BMAD-METHOD.git"
 DEFAULT_BMAD_NPM_PACKAGE = "bmad-method"
@@ -294,11 +296,9 @@ def _run_bmad_installer(project_dir: Path) -> subprocess.CompletedProcess[str]:
             f"npx --yes {package} install "
             f'--directory "{directory}" --modules {modules} --tools {tools} --yes'
         )
-        return subprocess.run(
+        return run_text_capture(
             command,
             shell=True,
-            capture_output=True,
-            text=True,
             check=False,
             cwd=directory,
         )
@@ -319,10 +319,8 @@ def _run_bmad_installer(project_dir: Path) -> subprocess.CompletedProcess[str]:
         tools,
         "--yes",
     ]
-    return subprocess.run(
+    return run_text_capture(
         command,
-        capture_output=True,
-        text=True,
         check=False,
         cwd=directory,
     )
@@ -466,10 +464,8 @@ def _run_git(cwd: Path, *args: str, extra_config: list[str] | None = None) -> su
     for item in extra_config or []:
         command.extend(["-c", item])
     command.extend(args)
-    return subprocess.run(
+    return run_text_capture(
         command,
         cwd=cwd,
-        capture_output=True,
-        text=True,
         check=False,
     )

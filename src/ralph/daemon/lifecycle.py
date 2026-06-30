@@ -11,6 +11,7 @@ import time
 
 from ralph.common.db import StateStore
 from ralph.common.protocol import Request
+from ralph.common.subprocess_util import run_text_capture
 from ralph.config import RalphConfig
 from ralph.pipeline.engine import PipelineEngine
 
@@ -264,10 +265,8 @@ def _pid_exists(pid: int) -> bool:
     if pid < 1:
         return False
     if os.name == "nt":
-        result = subprocess.run(
+        result = run_text_capture(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True,
-            text=True,
             check=False,
         )
         return str(pid) in result.stdout
