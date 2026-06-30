@@ -72,3 +72,13 @@ class HealingAttempt:
     layer: HealingLayer
     attempt: int
     reason: str
+
+
+@dataclass(slots=True)
+class DiagnosticReport:
+    story_id: int
+    root_cause: str
+    recommendation: str
+    suggested_fix: str
+    analysis: dict[str, object] = field(default_factory=dict)
+    id: int | None = None

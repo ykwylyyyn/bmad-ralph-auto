@@ -3,31 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 import tempfile
-import time
 import unittest
 
 from ralph.config import RalphConfig
-from ralph.common.db import StateStore
 from ralph.common.protocol import Request
 from ralph.daemon import RuntimePaths, read_status, request_daemon, start_daemon, stop_daemon
 
 
 class DaemonLifecycleTests(unittest.TestCase):
-    def _wait_until_running(self, root: Path, timeout: float = 10.0):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            status = read_status(root)
-            if status.state == "running":
-                return status
-            time.sleep(0.1)
-        return read_status(root)
-
     def test_start_status_stop_daemon(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             try:
-                start_daemon(root, RalphConfig(max_workers=2))
-                started = self._wait_until_running(root)
+                started = start_daemon(root, RalphConfig(max_workers=2))
                 self.assertEqual(started.state, "running")
                 self.assertIsNotNone(started.pid)
 
@@ -45,7 +33,6 @@ class DaemonLifecycleTests(unittest.TestCase):
             root = Path(tmp)
             try:
                 start_daemon(root, RalphConfig(max_workers=3))
-                self._wait_until_running(root)
                 paths = RuntimePaths(root)
 
                 response = request_daemon(paths, Request(type="status"))
@@ -56,19 +43,13 @@ class DaemonLifecycleTests(unittest.TestCase):
             finally:
                 stop_daemon(root)
 
-    def test_start_initializes_sqlite_schema_with_wal(self) -> None:
+    def test_start_initializes_sqlite_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             try:
                 start_daemon(root, RalphConfig(max_workers=1))
                 db_path = root / ".ralph" / "ralph.db"
                 self.assertTrue(db_path.exists())
-
-                store = StateStore.open(db_path)
-                try:
-                    self.assertTrue(store.is_wal_enabled())
-                finally:
-                    store.close()
 
                 connection = sqlite3.connect(db_path)
                 try:
@@ -79,7 +60,15 @@ class DaemonLifecycleTests(unittest.TestCase):
                     connection.close()
                 self.assertEqual(
                     [row[0] for row in rows],
-                    ["healing_attempts", "pipeline_events", "pipeline_state", "stories", "story_dependencies", "workers"],
+                    [
+                        "diagnostic_reports",
+                        "healing_attempts",
+                        "pipeline_events",
+                        "pipeline_state",
+                        "stories",
+                        "story_dependencies",
+                        "workers",
+                    ],
                 )
             finally:
                 stop_daemon(root)

@@ -7,7 +7,16 @@ from pathlib import Path
 import sqlite3
 from typing import Self
 
-from ralph.common.models import HealingAttempt, HealingLayer, PipelineState, Story, StoryState, WorkerHealth, WorkerState
+from ralph.common.models import (
+    DiagnosticReport,
+    HealingAttempt,
+    HealingLayer,
+    PipelineState,
+    Story,
+    StoryState,
+    WorkerHealth,
+    WorkerState,
+)
 from ralph.pipeline.state import is_valid_transition
 
 from .errors import (
@@ -189,6 +198,44 @@ class StateStore:
                 raise ConcurrentModificationError(story_id, from_state.value)
 
         return self.get_story(story_id)
+
+    def set_story_state(self, story_id: int, state: StoryState) -> Story:
+        now = _now()
+        with self._connection:
+            cursor = self._connection.execute(
+                "UPDATE stories SET state = ?, updated_at = ? WHERE id = ?",
+                (state.value, now, story_id),
+            )
+            if cursor.rowcount != 1:
+                raise StoryNotFoundError(story_id)
+        return self.get_story(story_id)
+
+    def requeue_story(self, story_id: int) -> Story:
+        now = _now()
+        with self._connection:
+            cursor = self._connection.execute(
+                """
+                UPDATE stories
+                SET state = ?, worker_id = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (StoryState.QUEUED.value, now, story_id),
+            )
+            if cursor.rowcount != 1:
+                raise StoryNotFoundError(story_id)
+        return self.get_story(story_id)
+
+    def reset_healing_state(self, story_id: int) -> Story:
+        with self._connection:
+            self._connection.execute(
+                "DELETE FROM healing_attempts WHERE story_id = ?",
+                (story_id,),
+            )
+            self._connection.execute(
+                "DELETE FROM diagnostic_reports WHERE story_id = ?",
+                (story_id,),
+            )
+        return self.requeue_story(story_id)
 
     def assign_story_to_worker(self, story_id: int, worker_id: int) -> Story:
         now = _now()
@@ -411,6 +458,72 @@ class StateStore:
             for row in rows
         ]
 
+    def count_healing_attempts(self, story_id: int, layer: HealingLayer) -> int:
+        row = self._connection.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM healing_attempts
+            WHERE story_id = ? AND layer = ? AND reason != 'self-healed'
+            """,
+            (story_id, layer.value),
+        ).fetchone()
+        return int(row["total"]) if row is not None else 0
+
+    def mark_story_exhausted(self, story_id: int) -> Story:
+        now = _now()
+        with self._connection:
+            cursor = self._connection.execute(
+                """
+                UPDATE stories
+                SET state = ?, worker_id = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (StoryState.FAILED.value, now, story_id),
+            )
+            if cursor.rowcount != 1:
+                raise StoryNotFoundError(story_id)
+        return self.get_story(story_id)
+
+    def save_diagnostic_report(self, report: DiagnosticReport) -> DiagnosticReport:
+        now = _now()
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO diagnostic_reports (
+                    story_id, root_cause, recommendation, suggested_fix, analysis_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(story_id) DO UPDATE SET
+                    root_cause = excluded.root_cause,
+                    recommendation = excluded.recommendation,
+                    suggested_fix = excluded.suggested_fix,
+                    analysis_json = excluded.analysis_json,
+                    created_at = excluded.created_at
+                """,
+                (
+                    report.story_id,
+                    report.root_cause,
+                    report.recommendation,
+                    report.suggested_fix,
+                    json.dumps(report.analysis),
+                    now,
+                ),
+            )
+        return self.get_diagnostic_report(report.story_id)
+
+    def get_diagnostic_report(self, story_id: int) -> DiagnosticReport:
+        row = self._connection.execute(
+            """
+            SELECT id, story_id, root_cause, recommendation, suggested_fix, analysis_json
+            FROM diagnostic_reports
+            WHERE story_id = ?
+            """,
+            (story_id,),
+        ).fetchone()
+        if row is None:
+            raise StoryNotFoundError(story_id)
+        return _diagnostic_report_from_row(row)
+
     def load_snapshot(self) -> PipelineSnapshot:
         return PipelineSnapshot(stories=self.list_stories(), workers=self.list_workers())
 
@@ -476,6 +589,23 @@ def _worker_from_row(row: sqlite3.Row) -> WorkerRecord:
         health=WorkerHealth(row["health"]),
         worktree_path=row["worktree_path"],
         pid=row["pid"],
+    )
+
+
+def _diagnostic_report_from_row(row: sqlite3.Row) -> DiagnosticReport:
+    try:
+        analysis = json.loads(row["analysis_json"] or "{}")
+    except json.JSONDecodeError:
+        analysis = {}
+    if not isinstance(analysis, dict):
+        analysis = {}
+    return DiagnosticReport(
+        id=int(row["id"]),
+        story_id=int(row["story_id"]),
+        root_cause=str(row["root_cause"]),
+        recommendation=str(row["recommendation"]),
+        suggested_fix=str(row["suggested_fix"]),
+        analysis=analysis,
     )
 
 

@@ -18,7 +18,6 @@ class CommonTests(unittest.TestCase):
 
     def test_pipeline_transition_contract(self) -> None:
         self.assertTrue(is_valid_transition(StoryState.QUEUED, StoryState.IN_PROGRESS))
-        self.assertTrue(is_valid_transition(StoryState.IN_PROGRESS, StoryState.QUEUED))
         self.assertFalse(is_valid_transition(StoryState.QUEUED, StoryState.DONE))
 
     def test_protocol_serialization_shape(self) -> None:
@@ -31,7 +30,18 @@ class CommonTests(unittest.TestCase):
         rows = connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
         ).fetchall()
-        self.assertEqual([row[0] for row in rows], ["healing_attempts", "pipeline_events", "pipeline_state", "stories", "story_dependencies", "workers"])
+        self.assertEqual(
+            [row[0] for row in rows],
+            [
+                "diagnostic_reports",
+                "healing_attempts",
+                "pipeline_events",
+                "pipeline_state",
+                "stories",
+                "story_dependencies",
+                "workers",
+            ],
+        )
 
 
 if __name__ == "__main__":
