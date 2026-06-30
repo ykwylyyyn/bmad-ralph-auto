@@ -81,3 +81,8 @@ development_status:
   5-1-bmad-submodule-integration-planning-workflow-access: done
   5-2-sprint-plan-generation-pipeline-artifact-handoff: done
   epic-5-retrospective: optional
+
+  # Epic 7: CI/CD Quality Pipeline
+  epic-7: done
+  7-1-bmad-tea-ci-pipeline: done
+  epic-7-retrospective: optional
