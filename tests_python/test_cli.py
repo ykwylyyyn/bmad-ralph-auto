@@ -7,6 +7,35 @@ import tempfile
 import unittest
 
 from ralph.cli import generate_completion, main
+from ralph.common.db.store import StateStore
+from ralph.common.models import Story, StoryState
+from ralph.config import RalphConfig
+from ralph.daemon import start_daemon, stop_daemon
+from ralph.init_project import init_project
+
+
+def _write_minimal_sprint_plan(root: Path) -> None:
+    artifacts = root / "_bmad-output" / "implementation-artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "sprint-status.yaml").write_text(
+        "story_location: _bmad-output/implementation-artifacts\n"
+        "development_status:\n"
+        "  1-1-demo-story: backlog\n",
+        encoding="utf-8",
+    )
+    (artifacts / "1-1-demo-story.md").write_text(
+        "# Story 1.1: Demo Story\n\n## Acceptance Criteria\n\n1. **AC1:** demo",
+        encoding="utf-8",
+    )
+
+
+def _seed_failed_story_for_cli(root: Path) -> None:
+    init_project(root, max_workers=2)
+    store = StateStore.open(root / ".ralph" / "ralph.db")
+    try:
+        store.upsert_story(Story(id=7, title="Auth login flow", state=StoryState.FAILED))
+    finally:
+        store.close()
 
 
 class CliTests(unittest.TestCase):
@@ -32,11 +61,13 @@ class CliTests(unittest.TestCase):
         self.assertIn("ralph 0.1.0", stdout)
 
     def test_subcommands_run(self) -> None:
-        for subcommand in ["status", "watch"]:
-            with self.subTest(subcommand=subcommand):
-                code, stdout, _stderr = self.run_cli(subcommand)
-                self.assertEqual(code, 0)
-                self.assertIn(subcommand, stdout)
+        code, stdout, _stderr = self.run_cli("watch")
+        self.assertEqual(code, 0)
+        self.assertIn("watch", stdout)
+
+        code, stdout, _stderr = self.run_cli("status")
+        self.assertEqual(code, 1)
+        self.assertIn("No running daemon found", stdout)
 
     def test_story_id_commands_require_numeric_id(self) -> None:
         code, _stdout, stderr = self.run_cli("diagnose", "abc")
@@ -44,9 +75,21 @@ class CliTests(unittest.TestCase):
         self.assertIn("invalid value", stderr)
 
     def test_story_id_commands_run(self) -> None:
-        code, stdout, _stderr = self.run_cli("retry", "7")
-        self.assertEqual(code, 0)
-        self.assertIn("story 7", stdout)
+        with tempfile.TemporaryDirectory() as tmp:
+            init_project(Path(tmp))
+            code, stdout, _stderr = self.run_cli("diagnose", "99", "--project-dir", tmp)
+            self.assertEqual(code, 1)
+            self.assertIn("Story #99 not found", stdout)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _seed_failed_story_for_cli(Path(tmp))
+            start_daemon(Path(tmp), RalphConfig(max_workers=2))
+            try:
+                code, stdout, _stderr = self.run_cli("retry", "7", "--project-dir", tmp)
+                self.assertEqual(code, 0)
+                self.assertIn("retrying", stdout)
+            finally:
+                stop_daemon(Path(tmp))
 
     def test_init_creates_config_and_runtime_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -58,6 +101,8 @@ class CliTests(unittest.TestCase):
             self.assertTrue((root / "ralph.toml").exists())
             self.assertTrue((root / ".ralph" / "logs").is_dir())
             self.assertTrue((root / ".ralph" / "worktrees").is_dir())
+            self.assertTrue((root / "_bmad-output" / "planning-artifacts").is_dir())
+            self.assertTrue((root / "_bmad-output" / "implementation-artifacts").is_dir())
 
     def test_init_keeps_existing_config_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,20 +122,41 @@ class CliTests(unittest.TestCase):
 
     def test_start_status_stop_use_daemon_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            _write_minimal_sprint_plan(Path(tmp))
             try:
                 code, stdout, _stderr = self.run_cli("start", "--project-dir", tmp)
                 self.assertEqual(code, 0)
-                self.assertIn("start: running", stdout)
+                self.assertIn("✓ Starting daemon done", stdout)
+                self.assertIn("※ Ralph", stdout)
+                self.assertIn("sprint plan:", stdout)
 
-                code, stdout, _stderr = self.run_cli("status", "--project-dir", tmp, "--detail")
+                code, stdout, _stderr = self.run_cli("status", "--project-dir", tmp)
                 self.assertEqual(code, 0)
-                self.assertIn("status: running with detail", stdout)
+                self.assertIn("※ Ralph", stdout)
+                self.assertIn("healthy", stdout)
 
                 code, stdout, _stderr = self.run_cli("stop", "--project-dir", tmp)
                 self.assertEqual(code, 0)
-                self.assertIn("stop: stopped", stdout)
+                self.assertIn("✓ Stopping daemon done", stdout)
+                self.assertIn("stopped", stdout)
             finally:
                 self.run_cli("stop", "--project-dir", tmp)
+
+    def test_start_without_sprint_plan_shows_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            code, stdout, _stderr = self.run_cli("start", "--project-dir", tmp)
+            self.assertEqual(code, 1)
+            self.assertIn("No sprint plan found in project", stdout)
+            self.assertIn("_bmad-output/implementation-artifacts", stdout)
+
+    def test_no_color_suppresses_ansi_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_minimal_sprint_plan(Path(tmp))
+            code, stdout, _stderr = self.run_cli("--no-color", "start", "--project-dir", tmp)
+            self.assertEqual(code, 0)
+            self.assertNotIn("\033[", stdout)
+            self.assertIn("※ Ralph", stdout)
+            self.run_cli("--no-color", "stop", "--project-dir", tmp)
 
     def test_generate_completion_rejects_unknown_shell(self) -> None:
         with self.assertRaises(ValueError):

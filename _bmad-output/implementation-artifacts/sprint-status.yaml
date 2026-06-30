@@ -50,34 +50,34 @@ development_status:
   epic-1-retrospective: optional
 
   # Epic 2: Autonomous Story Execution
-  epic-2: in-progress
+  epic-2: done
   2-1-daemon-process-lifecycle-signal-handling: done
   2-2-unix-domain-socket-ipc: done
-  2-3-sqlite-state-persistence-layer: backlog
-  2-4-bmad-artifact-parsing-sprint-plan-ingestion: backlog
-  2-5-pipeline-state-machine-story-scheduler: backlog
-  2-6-worker-spawning-git-worktree-isolation: backlog
-  2-7-worker-health-monitoring-lifecycle-management: backlog
+  2-3-sqlite-state-persistence-layer: done
+  2-4-bmad-artifact-parsing-sprint-plan-ingestion: done
+  2-5-pipeline-state-machine-story-scheduler: done
+  2-6-worker-spawning-git-worktree-isolation: done
+  2-7-worker-health-monitoring-lifecycle-management: done
   epic-2-retrospective: optional
 
   # Epic 3: Pipeline Monitoring & Status Display
-  epic-3: backlog
-  3-1-terminal-rendering-engine-theme-system: backlog
-  3-2-status-command-health-overview-sprint-progress: backlog
-  3-3-status-command-story-worker-detail-tables: backlog
+  epic-3: done
+  3-1-terminal-rendering-engine-theme-system: done
+  3-2-status-command-health-overview-sprint-progress: done
+  3-3-status-command-story-worker-detail-tables: done
   epic-3-retrospective: optional
 
   # Epic 4: Self-Healing & Error Recovery
-  epic-4: backlog
-  4-1-self-healing-layer-1-automatic-step-retry: backlog
-  4-2-self-healing-layer-2-worker-restart: backlog
-  4-3-self-healing-layer-3-diagnose-flow: backlog
-  4-4-diagnose-command-diagnostic-reports: backlog
-  4-5-retry-command-story-re-ingestion: backlog
+  epic-4: done
+  4-1-self-healing-layer-1-automatic-step-retry: done
+  4-2-self-healing-layer-2-worker-restart: done
+  4-3-self-healing-layer-3-diagnose-flow: done
+  4-4-diagnose-command-diagnostic-reports: done
+  4-5-retry-command-story-re-ingestion: done
   epic-4-retrospective: optional
 
   # Epic 5: Planning Integration
-  epic-5: backlog
-  5-1-bmad-submodule-integration-planning-workflow-access: backlog
-  5-2-sprint-plan-generation-pipeline-artifact-handoff: backlog
+  epic-5: done
+  5-1-bmad-submodule-integration-planning-workflow-access: done
+  5-2-sprint-plan-generation-pipeline-artifact-handoff: done
   epic-5-retrospective: optional

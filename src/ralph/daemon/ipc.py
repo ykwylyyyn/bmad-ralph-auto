@@ -70,6 +70,8 @@ class IpcServer:
 
 def request_daemon(paths: RuntimePaths, request: Request, timeout_secs: float = 2.0) -> Response:
     if socket_supported():
+        if not paths.socket_file.exists():
+            return Response(type="error", message="daemon socket is not available")
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         address: str | tuple[str, int] = str(paths.socket_file)
     else:
@@ -83,6 +85,8 @@ def request_daemon(paths: RuntimePaths, request: Request, timeout_secs: float = 
         client.connect(address)
         client.sendall((json.dumps(request.to_json_dict()) + "\n").encode("utf-8"))
         response = _read_json_line(client)
+    except (FileNotFoundError, ConnectionRefusedError, OSError):
+        return Response(type="error", message="daemon socket is not available")
     finally:
         client.close()
     return Response(
