@@ -8,6 +8,7 @@ from ralph.common.models import PipelineState, Story, StoryState, WorkerHealth, 
 from ralph.pipeline.dependency_graph import DependencyGraph
 from ralph.pipeline.healing.coordinator import EngineRestartGateway, HealingCoordinator
 from ralph.pipeline.ingestion import build_dependency_graph
+from ralph.pipeline.recovery import recover_orphaned_stories
 from ralph.pipeline.scheduler import StoryScheduler
 from ralph.verifier import VerifierConfig, VerifierRunner
 from ralph.worker.errors import WorkerSpawnError
@@ -95,9 +96,15 @@ class PipelineEngine:
             self._store.set_pipeline_state(PipelineState.IDLE)
             return PipelineState.IDLE
 
+        recover_orphaned_stories(
+            self._store,
+            active_worker_ids=set(self._worker_manager.active_sessions),
+        )
+
+        stories = self._store.list_stories()
         self._graph = build_dependency_graph(stories)
         self._ensure_worker_pool()
-        state = PipelineState.RUNNING
+        state = self._evaluate_pipeline_state(stories)
         self._store.set_pipeline_state(state)
         return state
 
@@ -113,7 +120,21 @@ class PipelineEngine:
                     self._store.requeue_story(story.id)
                 except Exception:
                     continue
+
         self._worker_manager.shutdown()
+
+        for worker in self._store.list_workers():
+            if worker.state == WorkerState.IDLE and worker.health == WorkerHealth.HEALTHY:
+                continue
+            self._store.upsert_worker(
+                WorkerRecord(
+                    id=worker.id,
+                    state=WorkerState.IDLE,
+                    health=WorkerHealth.HEALTHY,
+                    worktree_path=worker.worktree_path,
+                    pid=None,
+                )
+            )
 
     def kill_worker(self, worker_id: int) -> bool:
         exit_event = self._worker_manager.kill_worker(worker_id)
@@ -330,6 +351,14 @@ class PipelineEngine:
             {
                 "story_id": exit_event.story_id,
                 "summary": result.summary,
+                "failures": [
+                    {
+                        "command": failure.command,
+                        "exit_code": failure.exit_code,
+                        "stderr": failure.stderr,
+                    }
+                    for failure in result.failures
+                ],
             },
         )
 
@@ -476,6 +505,8 @@ class PipelineEngine:
             ):
                 return PipelineState.FAILED
             return PipelineState.COMPLETE
+        if self._stories_in_active_healing(stories):
+            return PipelineState.HEALING
         if any(story.state in _ACTIVE_STORY_STATES for story in stories):
             return PipelineState.RUNNING
         if any(story.state == StoryState.QUEUED for story in stories):
@@ -483,3 +514,21 @@ class PipelineEngine:
         if any(story.state == StoryState.BLOCKED for story in stories):
             return PipelineState.RUNNING
         return PipelineState.RUNNING
+
+    def _stories_in_active_healing(self, stories: list[Story]) -> bool:
+        from ralph.common.models import HealingAttempt
+
+        attempts_by_story: dict[int, list[HealingAttempt]] = {}
+        for attempt in self._store.list_healing_attempts():
+            attempts_by_story.setdefault(attempt.story_id, []).append(attempt)
+
+        for story in stories:
+            if story.state in _TERMINAL_STORY_STATES:
+                continue
+            attempts = attempts_by_story.get(story.id)
+            if not attempts:
+                continue
+            if attempts[-1].reason == "self-healed":
+                continue
+            return True
+        return False

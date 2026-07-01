@@ -83,7 +83,7 @@ class RetryServiceTests(unittest.TestCase):
                 result = retry_story(root, 3)
                 self.assertIsInstance(result, RetryError)
                 self.assertEqual(result.kind, RetryErrorKind.INVALID_STATE)
-                self.assertEqual(result.state_label, "running")
+                self.assertEqual(result.state_label, "queued")
             finally:
                 stop_daemon(root)
 

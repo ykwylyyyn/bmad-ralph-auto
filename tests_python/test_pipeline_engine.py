@@ -7,8 +7,8 @@ import tempfile
 import time
 import unittest
 
-from ralph.common.db import StateStore
-from ralph.common.models import Story, StoryState, WorkerHealth, WorkerState
+from ralph.common.db.store import StateStore
+from ralph.common.models import HealingAttempt, HealingLayer, Story, StoryState, WorkerHealth, WorkerState
 from ralph.common.db.store import WorkerRecord
 from ralph.pipeline.engine import PipelineEngine
 from ralph.pipeline.ingestion import build_dependency_graph
@@ -173,6 +173,36 @@ class PipelineEngineTests(unittest.TestCase):
 
             story = store.get_story(6001)
             self.assertEqual(story.state, StoryState.DONE)
+        finally:
+            store.close()
+            tempdir.cleanup()
+
+    def test_pipeline_reports_healing_when_story_has_active_retries(self) -> None:
+        store = StateStore.open_in_memory()
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tempdir.name) / "project"
+            worktrees = root / ".ralph" / "worktrees"
+            init_git_repo(root)
+            store.upsert_story(Story(id=7001, title="Healing", state=StoryState.QUEUED, key="7-1-heal"))
+            store.replace_story_dependencies({7001: []})
+            store.record_healing_attempt(
+                HealingAttempt(
+                    story_id=7001,
+                    layer=HealingLayer.STEP_RETRY,
+                    attempt=1,
+                    reason="verification failed",
+                )
+            )
+
+            engine = PipelineEngine(
+                store,
+                project_dir=root,
+                max_workers=1,
+                worktrees_dir=worktrees,
+            )
+            engine.initialize()
+            self.assertEqual(store.get_pipeline_state(), PipelineState.HEALING)
         finally:
             store.close()
             tempdir.cleanup()
