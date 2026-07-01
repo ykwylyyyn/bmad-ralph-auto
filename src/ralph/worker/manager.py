@@ -135,8 +135,14 @@ class WorkerManager:
                     log_path=log_path,
                 )
             )
-            self.cleanup_session(worker_id, active.branch, active.worktree_path)
+            if exit_kind == "completed":
+                self._active.pop(worker_id, None)
+            else:
+                self.cleanup_session(worker_id, active.branch, active.worktree_path)
         return exits
+
+    def release_worktree(self, exit_event: WorkerExit) -> None:
+        self._safe_destroy(exit_event.worktree_path, exit_event.branch)
 
     def poll_completions(self) -> list[WorkerExit]:
         """Backward-compatible alias that returns only completed (non-killed) exits."""

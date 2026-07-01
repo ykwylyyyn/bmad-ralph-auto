@@ -26,6 +26,7 @@ _LAYER_DISPLAY = {
 _STATE_DISPLAY = {
     StoryState.DONE: "completed",
     StoryState.IN_PROGRESS: "running",
+    StoryState.VERIFYING: "verifying",
     StoryState.IN_REVIEW: "running",
     StoryState.QUEUED: "queued",
     StoryState.BLOCKED: "blocked",
@@ -287,7 +288,7 @@ def _build_snapshot(daemon, story_rows, worker_rows, healing_rows, *, logs_dir: 
             counts = _increment(counts, "queued")
         elif state == StoryState.BLOCKED:
             counts = _increment(counts, "blocked")
-        elif state in {StoryState.IN_PROGRESS, StoryState.IN_REVIEW}:
+        elif state in {StoryState.IN_PROGRESS, StoryState.IN_REVIEW, StoryState.VERIFYING}:
             counts = _increment(counts, "running")
 
     worker_assignments = {
@@ -337,7 +338,7 @@ def _build_snapshot(daemon, story_rows, worker_rows, healing_rows, *, logs_dir: 
 def _story_duration(created_at: str, updated_at: str, state: StoryState, heartbeat_at: str | None) -> str:
     if state == StoryState.QUEUED:
         return "—"
-    end = heartbeat_at if state in {StoryState.IN_PROGRESS, StoryState.IN_REVIEW} else updated_at
+    end = heartbeat_at if state in {StoryState.IN_PROGRESS, StoryState.IN_REVIEW, StoryState.VERIFYING} else updated_at
     duration = format_duration_between(created_at, end)
     return duration if duration != "0s" else "—"
 

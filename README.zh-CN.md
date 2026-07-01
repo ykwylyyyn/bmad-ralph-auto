@@ -526,6 +526,25 @@ retry_limit = 3
 | `max_workers` | `5` | 并行 worker 上限 |
 | `retry_limit` | `3` | 自愈 Layer 1：单步失败的最大重试次数 |
 
+#### Verifier 门禁（可选）
+
+默认关闭。启用后 worker 写完代码会跑客观校验，**通过才标 `done`**：
+
+```toml
+[verifier]
+enabled = true
+timeout_secs = 300
+commands = ["make test-all"]
+```
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `verifier.enabled` | `false` | 是否启用验证门禁 |
+| `verifier.commands` | `[]` | 在 story worktree 中依次执行的命令 |
+| `verifier.timeout_secs` | `300` | 单条命令超时（秒） |
+
+`commands` 为空时视为未启用（向后兼容）。
+
 使用 `--force` 可覆盖已有配置：
 
 ```bash

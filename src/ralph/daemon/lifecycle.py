@@ -165,6 +165,8 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
         max_workers=config.effective().max_workers or 5,
         worktrees_dir=paths.worktrees_dir,
         logs_dir=paths.logs_dir,
+        retry_limit=config.effective().retry_limit or 3,
+        verifier_config=config.effective().verifier,
     )
     pipeline_state = engine.initialize()
     started_at = _now()

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from ralph.config import RalphConfig, load_config, render_config, resolve_config
+from ralph.verifier.config import VerifierConfig
 
 
 class ConfigTests(unittest.TestCase):
@@ -46,6 +47,27 @@ class ConfigTests(unittest.TestCase):
 
     def test_render_config_writes_toml(self) -> None:
         self.assertEqual(render_config(RalphConfig(max_workers=6)), "max_workers = 6\n")
+
+    def test_parse_verifier_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ralph.toml"
+            path.write_text(
+                """
+[verifier]
+enabled = true
+timeout_secs = 120
+commands = ["make test-all", "python -m pytest -q"]
+""".strip(),
+                encoding="utf-8",
+            )
+            config = load_config(path).effective()
+            self.assertTrue(config.verifier.enabled)
+            self.assertEqual(config.verifier.timeout_secs, 120)
+            self.assertEqual(config.verifier.commands, ("make test-all", "python -m pytest -q"))
+
+    def test_verifier_enabled_without_commands_is_disabled(self) -> None:
+        config = RalphConfig(verifier=VerifierConfig(enabled=True, commands=())).effective()
+        self.assertFalse(config.verifier.enabled)
 
 
 if __name__ == "__main__":

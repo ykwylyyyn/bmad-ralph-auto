@@ -13,11 +13,13 @@ class CommonTests(unittest.TestCase):
     def test_story_states_are_complete(self) -> None:
         self.assertEqual(
             {state.value for state in StoryState},
-            {"queued", "in_progress", "in_review", "blocked", "done", "failed"},
+            {"queued", "in_progress", "verifying", "in_review", "blocked", "done", "failed"},
         )
 
     def test_pipeline_transition_contract(self) -> None:
         self.assertTrue(is_valid_transition(StoryState.QUEUED, StoryState.IN_PROGRESS))
+        self.assertTrue(is_valid_transition(StoryState.IN_PROGRESS, StoryState.VERIFYING))
+        self.assertTrue(is_valid_transition(StoryState.VERIFYING, StoryState.DONE))
         self.assertFalse(is_valid_transition(StoryState.QUEUED, StoryState.DONE))
 
     def test_protocol_serialization_shape(self) -> None:

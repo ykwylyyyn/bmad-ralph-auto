@@ -6,12 +6,19 @@ from pathlib import Path
 from ralph.common.db.store import StateStore, WorkerRecord
 from ralph.common.models import PipelineState, Story, StoryState, WorkerHealth, WorkerState
 from ralph.pipeline.dependency_graph import DependencyGraph
+from ralph.pipeline.healing.coordinator import EngineRestartGateway, HealingCoordinator
 from ralph.pipeline.ingestion import build_dependency_graph
 from ralph.pipeline.scheduler import StoryScheduler
+from ralph.verifier import VerifierConfig, VerifierRunner
 from ralph.worker.errors import WorkerSpawnError
 from ralph.worker.manager import WorkerExit, WorkerManager, story_state_for_result
 
 _TERMINAL_STORY_STATES = {StoryState.DONE, StoryState.FAILED}
+_ACTIVE_STORY_STATES = {
+    StoryState.IN_PROGRESS,
+    StoryState.VERIFYING,
+    StoryState.IN_REVIEW,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +59,8 @@ class PipelineEngine:
         worktrees_dir: Path,
         logs_dir: Path | None = None,
         worker_manager: WorkerManager | None = None,
+        retry_limit: int = 3,
+        verifier_config: VerifierConfig | None = None,
     ) -> None:
         self._store = store
         self._project_dir = project_dir.resolve()
@@ -64,6 +73,17 @@ class PipelineEngine:
             logs_dir=logs_dir,
         )
         self._graph: DependencyGraph | None = None
+        self._verifier = VerifierRunner(verifier_config or VerifierConfig())
+        restart_gateway = EngineRestartGateway(
+            store,
+            self._worker_manager,
+            worktrees_dir,
+        )
+        self._healing = HealingCoordinator(
+            store,
+            retry_limit=retry_limit,
+            gateway=restart_gateway,
+        )
 
     @property
     def worker_manager(self) -> WorkerManager:
@@ -82,6 +102,17 @@ class PipelineEngine:
         return state
 
     def shutdown(self) -> None:
+        for story in self._store.list_stories():
+            if story.state == StoryState.IN_PROGRESS:
+                try:
+                    self._store.rollback_story_assignment(story.id)
+                except Exception:
+                    continue
+            elif story.state == StoryState.VERIFYING:
+                try:
+                    self._store.requeue_story(story.id)
+                except Exception:
+                    continue
         self._worker_manager.shutdown()
 
     def kill_worker(self, worker_id: int) -> bool:
@@ -246,32 +277,73 @@ class PipelineEngine:
     def _handle_completion(self, exit_event: WorkerExit) -> None:
         if exit_event.result is None:
             return
+
         target_state = story_state_for_result(exit_event.result)
         story = self._store.get_story(exit_event.story_id)
-        if story.state == StoryState.IN_PROGRESS:
-            self._store.transition_story_state(exit_event.story_id, target_state)
-        self._store.upsert_worker(
-            WorkerRecord(
-                id=exit_event.worker_id,
-                state=WorkerState.IDLE,
-                health=WorkerHealth.HEALTHY,
-                worktree_path=str(self._worktrees_dir / f"worker-{exit_event.worker_id}"),
-                pid=None,
+        if story.state != StoryState.IN_PROGRESS:
+            return
+
+        self._release_worker(exit_event.worker_id)
+
+        if target_state == StoryState.FAILED:
+            self._healing.handle_failure(
+                story_id=exit_event.story_id,
+                worker_id=exit_event.worker_id,
+                reason=exit_event.result.error or "worker reported failure",
+                log_excerpt=self._log_excerpt(exit_event),
             )
+            self._worker_manager.release_worktree(exit_event)
+            return
+
+        if self._verifier.enabled:
+            self._store.transition_story_state(exit_event.story_id, StoryState.VERIFYING)
+            self._verify_and_finish(exit_event)
+            self._worker_manager.release_worktree(exit_event)
+            return
+
+        self._store.transition_story_state(exit_event.story_id, StoryState.IN_REVIEW)
+        self._worker_manager.release_worktree(exit_event)
+
+    def _verify_and_finish(self, exit_event: WorkerExit) -> None:
+        story = self._store.get_story(exit_event.story_id)
+        if story.state != StoryState.VERIFYING:
+            return
+
+        result = self._verifier.run(exit_event.worktree_path)
+        if result.passed:
+            self._store.transition_story_state(exit_event.story_id, StoryState.DONE)
+            self._store.record_pipeline_event(
+                "verification_passed",
+                {"story_id": exit_event.story_id},
+            )
+            return
+
+        log_excerpt = [failure.stderr for failure in result.failures if failure.stderr]
+        self._healing.handle_failure(
+            story_id=exit_event.story_id,
+            worker_id=exit_event.worker_id,
+            reason=result.summary,
+            log_excerpt=log_excerpt,
+        )
+        self._store.record_pipeline_event(
+            "verification_failed",
+            {
+                "story_id": exit_event.story_id,
+                "summary": result.summary,
+            },
         )
 
     def _handle_unexpected_exit(self, exit_event: WorkerExit) -> None:
         story = self._store.get_story(exit_event.story_id)
-        if story.state == StoryState.IN_PROGRESS:
-            self._store.rollback_story_assignment(exit_event.story_id)
-        self._store.upsert_worker(
-            WorkerRecord(
-                id=exit_event.worker_id,
-                state=WorkerState.FAILED,
-                health=WorkerHealth.DEGRADED,
-                worktree_path=str(self._worktrees_dir / f"worker-{exit_event.worker_id}"),
-                pid=None,
-            )
+        if story.state != StoryState.IN_PROGRESS:
+            return
+
+        self._release_worker(exit_event.worker_id, health=WorkerHealth.DEGRADED, state=WorkerState.FAILED)
+        self._healing.handle_failure(
+            story_id=exit_event.story_id,
+            worker_id=exit_event.worker_id,
+            reason=f"unexpected worker exit (code {exit_event.exit_code})",
+            log_excerpt=self._log_excerpt(exit_event),
         )
         self._store.record_pipeline_event(
             "worker_exit_unexpected",
@@ -287,15 +359,7 @@ class PipelineEngine:
         story = self._store.get_story(exit_event.story_id)
         if story.state == StoryState.IN_PROGRESS:
             self._store.rollback_story_assignment(exit_event.story_id)
-        self._store.upsert_worker(
-            WorkerRecord(
-                id=exit_event.worker_id,
-                state=WorkerState.FAILED,
-                health=WorkerHealth.DEGRADED,
-                worktree_path=str(self._worktrees_dir / f"worker-{exit_event.worker_id}"),
-                pid=None,
-            )
-        )
+        self._release_worker(exit_event.worker_id, health=WorkerHealth.DEGRADED, state=WorkerState.FAILED)
         self._store.record_pipeline_event(
             "worker_killed",
             {
@@ -304,6 +368,32 @@ class PipelineEngine:
                 "exit_code": exit_event.exit_code,
             },
         )
+
+    def _release_worker(
+        self,
+        worker_id: int,
+        *,
+        health: WorkerHealth = WorkerHealth.HEALTHY,
+        state: WorkerState = WorkerState.IDLE,
+    ) -> None:
+        self._store.upsert_worker(
+            WorkerRecord(
+                id=worker_id,
+                state=state,
+                health=health,
+                worktree_path=str(self._worktrees_dir / f"worker-{worker_id}"),
+                pid=None,
+            )
+        )
+
+    def _log_excerpt(self, exit_event: WorkerExit) -> list[str]:
+        if exit_event.log_path is None or not exit_event.log_path.is_file():
+            return []
+        try:
+            lines = exit_event.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+        return [line for line in lines[-20:] if line.strip()]
 
     def _sync_worker_health_to_db(self) -> None:
         active_reports = {item.worker_id: item for item in self._worker_manager.check_health()}
@@ -386,8 +476,10 @@ class PipelineEngine:
             ):
                 return PipelineState.FAILED
             return PipelineState.COMPLETE
-        if any(story.state == StoryState.IN_PROGRESS for story in stories):
+        if any(story.state in _ACTIVE_STORY_STATES for story in stories):
             return PipelineState.RUNNING
         if any(story.state == StoryState.QUEUED for story in stories):
+            return PipelineState.RUNNING
+        if any(story.state == StoryState.BLOCKED for story in stories):
             return PipelineState.RUNNING
         return PipelineState.RUNNING
