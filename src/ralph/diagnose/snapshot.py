@@ -99,6 +99,17 @@ def load_diagnose_snapshot(project_dir: str | Path, story_id: int) -> DiagnoseSn
             """,
             (story_id,),
         ).fetchone()
+
+        verification_rows = connection.execute(
+            """
+            SELECT payload, created_at
+            FROM pipeline_events
+            WHERE event_type = 'verification_failed'
+              AND json_extract(payload, '$.story_id') = ?
+            ORDER BY id
+            """,
+            (story_id,),
+        ).fetchall()
     finally:
         connection.close()
 
@@ -140,13 +151,16 @@ def load_diagnose_snapshot(project_dir: str | Path, story_id: int) -> DiagnoseSn
         root_cause=root_cause,
         recommendation=recommendation,
         suggested_fix=suggested_fix,
-        events=_build_events(healing_rows),
+        events=_build_events(healing_rows, verification_rows),
         analysis=analysis,
     )
 
 
-def _build_events(healing_rows: list[sqlite3.Row]) -> list[DiagnoseEvent]:
-    events: list[DiagnoseEvent] = []
+def _build_events(
+    healing_rows: list[sqlite3.Row],
+    verification_rows: list[sqlite3.Row] | None = None,
+) -> list[DiagnoseEvent]:
+    events: list[tuple[str, DiagnoseEvent]] = []
     for row in healing_rows:
         layer = str(row["layer"])
         layer_label = _LAYER_DISPLAY.get(layer, layer)
@@ -160,14 +174,58 @@ def _build_events(healing_rows: list[sqlite3.Row]) -> list[DiagnoseEvent]:
             description = f"worker restart ({reason})"
         else:
             description = f"{reason} (attempt {attempt})"
+        created_at = str(row["created_at"])
         events.append(
-            DiagnoseEvent(
-                timestamp=_format_event_time(str(row["created_at"])),
-                layer_label=layer_label,
-                description=description,
+            (
+                created_at,
+                DiagnoseEvent(
+                    timestamp=_format_event_time(created_at),
+                    layer_label=layer_label,
+                    description=description,
+                ),
             )
         )
-    return events
+
+    for row in verification_rows or []:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        created_at = str(row["created_at"])
+        events.append(
+            (
+                created_at,
+                DiagnoseEvent(
+                    timestamp=_format_event_time(created_at),
+                    layer_label="Verifier",
+                    description=_verification_description(payload),
+                ),
+            )
+        )
+
+    events.sort(key=lambda item: item[0])
+    return [event for _created_at, event in events]
+
+
+def _verification_description(payload: dict[str, object]) -> str:
+    failures = payload.get("failures")
+    if isinstance(failures, list) and failures:
+        first = failures[0]
+        if isinstance(first, dict):
+            command = str(first.get("command", "?"))
+            exit_code = first.get("exit_code", "?")
+            stderr = str(first.get("stderr", "")).strip()
+            excerpt = "\n".join(stderr.splitlines()[-5:]) if stderr else ""
+            description = f"{command} (exit {exit_code})"
+            if excerpt:
+                description = f"{description} — {excerpt}"
+            return description
+    summary = payload.get("summary")
+    if summary:
+        return str(summary)
+    return "verification failed"
 
 
 def _format_event_time(value: str) -> str:

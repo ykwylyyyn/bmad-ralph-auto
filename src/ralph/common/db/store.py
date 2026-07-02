@@ -39,6 +39,9 @@ class WorkerRecord:
     health: WorkerHealth
     worktree_path: str
     pid: int | None = None
+    backend: str | None = None
+    model: str | None = None
+    cost_usd: float | None = None
 
 
 @dataclass(slots=True)
@@ -78,6 +81,8 @@ class StateStore:
     def initialize(self) -> None:
         apply_schema(self._connection)
         _ensure_story_columns(self._connection)
+        _ensure_worker_columns(self._connection)
+        _ensure_story_memory_table(self._connection)
         self._connection.commit()
 
     def is_wal_enabled(self) -> bool:
@@ -376,18 +381,61 @@ class StateStore:
             )
         return events
 
+    def get_story_memory(self, story_id: int, key: str) -> object | None:
+        row = self._connection.execute(
+            """
+            SELECT value_json
+            FROM story_memory
+            WHERE story_id = ? AND key = ?
+            """,
+            (story_id, key),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value_json"])
+        except json.JSONDecodeError:
+            return None
+
+    def set_story_memory(self, story_id: int, key: str, value: object) -> None:
+        now = _now()
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO story_memory (story_id, key, value_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(story_id, key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                (story_id, key, json.dumps(value), now),
+            )
+
+    def delete_story_memory(self, story_id: int, key: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "DELETE FROM story_memory WHERE story_id = ? AND key = ?",
+                (story_id, key),
+            )
+
     def upsert_worker(self, worker: WorkerRecord) -> WorkerRecord:
         now = _now()
         with self._connection:
             self._connection.execute(
                 """
-                INSERT INTO workers (id, state, health, worktree_path, pid, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO workers (
+                    id, state, health, worktree_path, pid, backend, model, cost_usd,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     state = excluded.state,
                     health = excluded.health,
                     worktree_path = excluded.worktree_path,
                     pid = excluded.pid,
+                    backend = excluded.backend,
+                    model = excluded.model,
+                    cost_usd = excluded.cost_usd,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -396,6 +444,9 @@ class StateStore:
                     worker.health.value,
                     worker.worktree_path,
                     worker.pid,
+                    worker.backend,
+                    worker.model,
+                    worker.cost_usd,
                     now,
                     now,
                 ),
@@ -404,7 +455,10 @@ class StateStore:
 
     def get_worker(self, worker_id: int) -> WorkerRecord:
         row = self._connection.execute(
-            "SELECT id, state, health, worktree_path, pid FROM workers WHERE id = ?",
+            """
+            SELECT id, state, health, worktree_path, pid, backend, model, cost_usd
+            FROM workers WHERE id = ?
+            """,
             (worker_id,),
         ).fetchone()
         if row is None:
@@ -413,7 +467,10 @@ class StateStore:
 
     def list_workers(self) -> list[WorkerRecord]:
         rows = self._connection.execute(
-            "SELECT id, state, health, worktree_path, pid FROM workers ORDER BY id"
+            """
+            SELECT id, state, health, worktree_path, pid, backend, model, cost_usd
+            FROM workers ORDER BY id
+            """
         ).fetchall()
         return [_worker_from_row(row) for row in rows]
 
@@ -583,13 +640,30 @@ def _story_from_row(row: sqlite3.Row, dependencies: list[int] | None = None) -> 
 
 
 def _worker_from_row(row: sqlite3.Row) -> WorkerRecord:
+    keys = set(row.keys())
     return WorkerRecord(
         id=row["id"],
         state=WorkerState(row["state"]),
         health=WorkerHealth(row["health"]),
         worktree_path=row["worktree_path"],
         pid=row["pid"],
+        backend=str(row["backend"]) if "backend" in keys and row["backend"] is not None else None,
+        model=str(row["model"]) if "model" in keys and row["model"] is not None else None,
+        cost_usd=float(row["cost_usd"]) if "cost_usd" in keys and row["cost_usd"] is not None else None,
     )
+
+
+def _ensure_worker_columns(connection: sqlite3.Connection) -> None:
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(workers)").fetchall()
+    }
+    if "backend" not in columns:
+        connection.execute("ALTER TABLE workers ADD COLUMN backend TEXT")
+    if "model" not in columns:
+        connection.execute("ALTER TABLE workers ADD COLUMN model TEXT")
+    if "cost_usd" not in columns:
+        connection.execute("ALTER TABLE workers ADD COLUMN cost_usd REAL")
 
 
 def _diagnostic_report_from_row(row: sqlite3.Row) -> DiagnosticReport:
@@ -624,3 +698,18 @@ def _ensure_story_columns(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE stories ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '[]'"
         )
+
+
+def _ensure_story_memory_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS story_memory (
+            story_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (story_id, key),
+            FOREIGN KEY(story_id) REFERENCES stories(id)
+        )
+        """
+    )

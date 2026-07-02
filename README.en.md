@@ -272,6 +272,72 @@ retry_limit = 3
 | `max_workers` | `5` | Maximum parallel workers |
 | `retry_limit` | `3` | Self-healing Layer 1: max step retries before escalation |
 
+#### Verifier gate (optional)
+
+Disabled by default. When enabled, workers must pass objective checks before a story is marked `done`:
+
+```toml
+[verifier]
+enabled = true
+timeout_secs = 300
+commands = ["make test-all"]
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `verifier.enabled` | `false` | Enable verification gate |
+| `verifier.commands` | `[]` | Commands run in story worktree (in order) |
+| `verifier.timeout_secs` | `300` | Per-command timeout (seconds) |
+
+Empty `commands` is treated as disabled (backward compatible).
+
+#### Story cycle orchestration (optional)
+
+Disabled by default (`enabled=false`). Legacy behavior: single dev worker + optional post-dev verifier.
+
+When enabled, runs BMAD-equivalent phases in sequence (new Claude session per phase; worktree reused):
+
+```toml
+[story_cycle]
+enabled = true
+steps = ["dev", "verify"]
+max_step_retries = 3
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `story_cycle.enabled` | `false` | Enable multi-phase orchestration |
+| `story_cycle.steps` | `["dev"]` | Phase sequence: `atdd`, `dev`, `verify`, `qa` |
+| `story_cycle.max_step_retries` | `3` | Per-phase retry limit (Layer 1–3 healing) |
+
+The `verify` step uses `[verifier]` commands (not Claude). Progress syncs to `sprint-status.yaml`.
+
+#### Multi-model router (optional)
+
+Without `[router]`, all workers use the Claude CLI (unchanged).
+
+Route phases to different CLI backends:
+
+```toml
+[router]
+default = "claude"
+
+[router.backends.claude]
+command = "claude"
+args = ["--dangerously-skip-permissions"]
+
+[router.backends.gemini]
+command = "gemini"
+args = ["-p"]
+model = "gemini-pro"
+
+[router.rules]
+dev = "claude"
+qa = "gemini"
+```
+
+`ralph status --detail` shows backend, model, and cost per story when available.
+
 Overwrite existing config with `--force`:
 
 ```bash

@@ -46,6 +46,7 @@ class WorkerManagerTests(unittest.TestCase):
         completions = self._wait_for_completions()
         self.assertEqual(len(completions), 1)
         self.assertEqual(completions[0].result.kind, "success")
+        self.manager.release_worktree(completions[0])
         self.assertFalse(active.worktree_path.exists())
 
     def test_concurrent_workers_use_separate_worktrees(self) -> None:
@@ -57,7 +58,9 @@ class WorkerManagerTests(unittest.TestCase):
         )
         self.assertNotEqual(first.worktree_path, second.worktree_path)
         self.assertNotEqual(first.branch, second.branch)
-        self._wait_for_completions(count=2)
+        completions = self._wait_for_completions(count=2)
+        for completion in completions:
+            self.manager.release_worktree(completion)
 
     def _wait_for_completions(self, count: int = 1, timeout: float = 2.0):
         deadline = time.monotonic() + timeout

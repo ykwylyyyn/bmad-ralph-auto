@@ -93,6 +93,38 @@ class DiagnoseSnapshotTests(unittest.TestCase):
 
 
 class DiagnoseDisplayTests(unittest.TestCase):
+    def test_load_snapshot_includes_verification_failed_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_exhausted_story(root)
+            db_path = root / ".ralph" / "ralph.db"
+            store = StateStore.open(db_path)
+            try:
+                store.record_pipeline_event(
+                    "verification_failed",
+                    {
+                        "story_id": 7,
+                        "summary": "verification failed: make test (exit 1)",
+                        "failures": [
+                            {
+                                "command": "make test",
+                                "exit_code": 1,
+                                "stderr": "line1\nline2\nFAILED",
+                            }
+                        ],
+                    },
+                )
+            finally:
+                store.close()
+
+            result = load_diagnose_snapshot(root, 7)
+            self.assertIsInstance(result, DiagnoseSnapshot)
+            verifier_events = [event for event in result.events if event.layer_label == "Verifier"]
+            self.assertEqual(len(verifier_events), 1)
+            self.assertIn("make test", verifier_events[0].description)
+            self.assertIn("exit 1", verifier_events[0].description)
+            self.assertIn("FAILED", verifier_events[0].description)
+
     def test_render_includes_border_timeline_and_recommendation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

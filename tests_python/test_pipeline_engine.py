@@ -7,12 +7,15 @@ import tempfile
 import time
 import unittest
 
-from ralph.common.db import StateStore
-from ralph.common.models import Story, StoryState, WorkerHealth, WorkerState
+from ralph.common.db.store import StateStore
+from ralph.common.models import HealingAttempt, HealingLayer, Story, StoryState, WorkerHealth, WorkerState
 from ralph.common.db.store import WorkerRecord
 from ralph.pipeline.engine import PipelineEngine
 from ralph.pipeline.ingestion import build_dependency_graph
 from ralph.common.models import PipelineState
+from ralph.pipeline.story_cycle import StoryCycleConfig
+from ralph.verifier.config import VerifierConfig
+from ralph.worker.prompt import build_step_prompt, load_prompt_context
 
 from helpers import fake_claude_process, init_git_repo, worker_manager_for_repo
 
@@ -139,6 +142,90 @@ class PipelineEngineTests(unittest.TestCase):
         graph = build_dependency_graph(stories)
         self.assertEqual(graph.dependency_count, 1)
         self.assertEqual(graph.edges[5002], [5001])
+
+    def test_verifier_marks_story_done_when_checks_pass(self) -> None:
+        store = StateStore.open_in_memory()
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tempdir.name) / "project"
+            worktrees = root / ".ralph" / "worktrees"
+            init_git_repo(root)
+            store.upsert_story(Story(id=6001, title="Verify me", state=StoryState.QUEUED, key="6-1-verify"))
+            store.replace_story_dependencies({6001: []})
+
+            manager = worker_manager_for_repo(root, worktrees)
+            engine = PipelineEngine(
+                store,
+                project_dir=root,
+                max_workers=1,
+                worktrees_dir=worktrees,
+                worker_manager=manager,
+                verifier_config=VerifierConfig(
+                    enabled=True,
+                    commands=(f'{sys.executable} -c "import sys; sys.exit(0)"',),
+                ),
+            )
+            engine.initialize()
+            engine.tick()
+            for _ in range(20):
+                time.sleep(0.15)
+                engine.tick()
+                if store.get_story(6001).state == StoryState.DONE:
+                    break
+
+            story = store.get_story(6001)
+            self.assertEqual(story.state, StoryState.DONE)
+        finally:
+            store.close()
+            tempdir.cleanup()
+
+    def test_pipeline_reports_healing_when_story_has_active_retries(self) -> None:
+        store = StateStore.open_in_memory()
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tempdir.name) / "project"
+            worktrees = root / ".ralph" / "worktrees"
+            init_git_repo(root)
+            store.upsert_story(Story(id=7001, title="Healing", state=StoryState.QUEUED, key="7-1-heal"))
+            store.replace_story_dependencies({7001: []})
+            store.record_healing_attempt(
+                HealingAttempt(
+                    story_id=7001,
+                    layer=HealingLayer.STEP_RETRY,
+                    attempt=1,
+                    reason="verification failed",
+                )
+            )
+
+            engine = PipelineEngine(
+                store,
+                project_dir=root,
+                max_workers=1,
+                worktrees_dir=worktrees,
+            )
+            engine.initialize()
+            self.assertEqual(store.get_pipeline_state(), PipelineState.HEALING)
+        finally:
+            store.close()
+            tempdir.cleanup()
+
+    def test_story_cycle_builds_step_prompt_with_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            skill_dir = root / ".claude" / "skills" / "bmad-bmm-dev-story"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("# Dev skill\nUse TDD.\n", encoding="utf-8")
+
+            story = Story(id=8001, title="Cycle", key="8-1-cycle", acceptance_criteria=["works"])
+            context = load_prompt_context(root, story, "dev")
+            prompt = build_step_prompt(story, "dev", context)
+            self.assertIn("cycle step `dev`", prompt)
+            self.assertIn("bmad-bmm-dev-story", prompt)
+            self.assertIn("Use TDD", prompt)
+
+    def test_story_cycle_config_disabled_preserves_legacy_path(self) -> None:
+        config = StoryCycleConfig().effective()
+        self.assertFalse(config.enabled)
 
 
 if __name__ == "__main__":

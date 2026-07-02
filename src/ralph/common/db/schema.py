@@ -68,6 +68,15 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
     payload TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS story_memory (
+    story_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (story_id, key),
+    FOREIGN KEY(story_id) REFERENCES stories(id)
+);
 """
 
 

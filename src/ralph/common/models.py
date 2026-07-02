@@ -7,6 +7,7 @@ from enum import StrEnum
 class StoryState(StrEnum):
     QUEUED = "queued"
     IN_PROGRESS = "in_progress"
+    VERIFYING = "verifying"
     IN_REVIEW = "in_review"
     BLOCKED = "blocked"
     DONE = "done"
