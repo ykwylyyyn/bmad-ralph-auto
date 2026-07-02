@@ -735,6 +735,7 @@ ralph completions bash|zsh|fish
 | Worker hangs / no output | Set `RALPH_CLAUDE_ARGS="--dangerously-skip-permissions"` |
 | BMAD layout validation failed | Do not use the BMAD-METHOD source repo as a submodule in `_bmad/`; run `npx bmad-method install --directory . --modules bmm,tea --tools claude-code --yes` |
 | `npm error Invalid or unexpected token` | Usually a broken Node/npm install on Windows (common with older nvm-windows). Reinstall [Node 20 LTS](https://nodejs.org), or upgrade nvm-windows to 1.1.11+ and run `nvm uninstall <ver>` then `nvm install <ver>` in an **Administrator** PowerShell; verify with `node -v` and `npm -v` before `ralph init` |
+| BMAD skill `resolve_customization.py` exit 49 / `python3` not found | On Windows, `python` works but `python3` points to `WindowsApps\python3.exe` (Microsoft Store stub). Go to **Settings → Apps → Advanced app settings → App execution aliases** and turn off `python.exe` and `python3.exe`; or run manually: `python _bmad\scripts\resolve_customization.py --skill ".claude\skills\bmad-create-epics-and-stories" --key workflow` (adjust paths to your project) |
 | Node.js missing | Install Node 20+, then re-run `ralph init` |
 | Daemon already running | Run `ralph stop` before `ralph start` |
 | Story failed | `ralph diagnose <ID>` for report; fix and `ralph retry <ID>` |
