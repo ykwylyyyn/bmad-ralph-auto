@@ -14,8 +14,7 @@ from .health import (
     health_for_idle_worker,
     pid_is_alive,
 )
-from .output import ClaudeResult, parse_claude_output
-from .process_sync import SyncClaudeProcess, SyncClaudeSessionHandle
+from .output import ClaudeResult, parse_worker_output
 from .prompt import build_story_prompt
 from .worktree import GitWorktreeManager, story_branch_name
 
@@ -26,7 +25,10 @@ class ActiveWorkerSession:
     story_id: int
     branch: str
     worktree_path: Path
-    session: SyncClaudeSessionHandle
+    session: object
+    backend: str = "claude"
+    backend_model: str | None = None
+    output_format: str = "claude_json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,10 +41,12 @@ class WorkerExit:
     branch: str
     worktree_path: Path
     log_path: Path | None = None
+    backend: str = "claude"
+    backend_model: str | None = None
 
 
 class WorkerManager:
-    """Spawns workers in isolated git worktrees with Claude CLI sessions."""
+    """Spawns workers in isolated git worktrees with routed CLI backends."""
 
     def __init__(
         self,
@@ -50,13 +54,25 @@ class WorkerManager:
         worktrees_dir: str | Path,
         *,
         logs_dir: str | Path | None = None,
-        process_factory: SyncClaudeProcess | None = None,
+        process_factory: object | None = None,
+        backend_selector: object | None = None,
         worktree_manager: GitWorktreeManager | None = None,
     ) -> None:
+        from ralph.router.selector import BackendSelector
+
         self._project_dir = Path(project_dir).resolve()
         self._worktrees_dir = Path(worktrees_dir).resolve()
         self._logs_dir = Path(logs_dir).resolve() if logs_dir is not None else None
-        self._process = process_factory or SyncClaudeProcess()
+        if backend_selector is not None:
+            self._selector = backend_selector
+        elif process_factory is not None:
+            from ralph.worker.process_sync import SyncClaudeProcess
+
+            if not isinstance(process_factory, SyncClaudeProcess):
+                raise TypeError("process_factory must be SyncClaudeProcess")
+            self._selector = BackendSelector.from_process_factory(process_factory)
+        else:
+            self._selector = BackendSelector.default()
         self._worktrees = worktree_manager or GitWorktreeManager()
         self._active: dict[int, ActiveWorkerSession] = {}
 
@@ -73,6 +89,7 @@ class WorkerManager:
         worker_id: int,
         story: Story,
         *,
+        step: str = "dev",
         prompt: str | None = None,
         worktree_path: Path | None = None,
     ) -> ActiveWorkerSession:
@@ -85,25 +102,31 @@ class WorkerManager:
         branch = story_branch_name(story.id, story.key)
         resolved_worktree = worktree_path.resolve() if worktree_path is not None else self._worktrees_dir / f"worker-{worker_id}"
 
-        process = self._process.with_context(logs_dir=self._logs_dir, worker_id=worker_id)
+        backend_name, backend = self._selector.select(step)
+        output_format = self._selector.output_format_for(backend_name)
+        worker_backend = backend.with_context(logs_dir=self._logs_dir, worker_id=worker_id)
         try:
             if worktree_path is None:
                 self._worktrees.create(self._project_dir, resolved_worktree, branch)
             elif not resolved_worktree.is_dir():
                 raise WorkerSpawnError(worker_id, story.id, f"worktree does not exist: {resolved_worktree}")
             session_prompt = prompt or build_story_prompt(story)
-            session = process.spawn(resolved_worktree, session_prompt)
+            session = worker_backend.spawn(resolved_worktree, session_prompt)
         except (WorktreeError, OSError) as exc:
             if worktree_path is None:
                 self._safe_destroy(resolved_worktree, branch)
             raise WorkerSpawnError(worker_id, story.id, str(exc)) from exc
 
+        run_info = session.run_info
         active = ActiveWorkerSession(
             worker_id=worker_id,
             story_id=story.id,
             branch=branch,
             worktree_path=resolved_worktree,
             session=session,
+            backend=run_info.backend,
+            backend_model=run_info.model,
+            output_format=output_format,
         )
         self._active[worker_id] = active
         return active
@@ -132,7 +155,13 @@ class WorkerManager:
                 continue
             output = active.session.wait()
             exit_kind = classify_exit(output, killed=active.session.was_killed)
-            result = parse_claude_output(output) if exit_kind == "completed" else None
+            result = None
+            if exit_kind == "completed":
+                result = parse_worker_output(
+                    output,
+                    output_format=active.output_format,
+                    model=active.backend_model,
+                )
             log_path = self._log_path_for_worker(worker_id)
             exits.append(
                 WorkerExit(
@@ -144,6 +173,8 @@ class WorkerManager:
                     branch=active.branch,
                     worktree_path=active.worktree_path,
                     log_path=log_path,
+                    backend=active.backend,
+                    backend_model=active.backend_model,
                 )
             )
             if exit_kind == "completed":
@@ -175,6 +206,8 @@ class WorkerManager:
             branch=active.branch,
             worktree_path=active.worktree_path,
             log_path=log_path,
+            backend=active.backend,
+            backend_model=active.backend_model,
         )
         self.cleanup_session(worker_id, active.branch, active.worktree_path)
         return exit_event

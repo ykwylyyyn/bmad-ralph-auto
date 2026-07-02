@@ -168,6 +168,7 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
         retry_limit=config.effective().retry_limit or 3,
         verifier_config=config.effective().verifier,
         story_cycle_config=config.effective().story_cycle,
+        router_config=config.effective().router,
     )
     pipeline_state = engine.initialize()
     started_at = _now()

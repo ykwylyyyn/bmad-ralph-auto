@@ -17,7 +17,39 @@ class ClaudeResult:
     cost_usd: float | None = None
     duration_ms: int | None = None
     num_turns: int | None = None
+    model: str | None = None
     raw_output: str = ""
+
+
+def parse_worker_output(
+    output: ClaudeOutput,
+    *,
+    output_format: str = "claude_json",
+    model: str | None = None,
+) -> ClaudeResult:
+    if output_format == "plain":
+        if output.exit_code == 0:
+            return ClaudeResult(kind="success", result=output.stdout.strip(), model=model)
+        return ClaudeResult(
+            kind="failure",
+            error=(output.stderr or output.stdout).strip(),
+            model=model,
+        )
+    result = parse_claude_output(output)
+    if model and result.model is None:
+        return ClaudeResult(
+            kind=result.kind,
+            result=result.result,
+            error=result.error,
+            subtype=result.subtype,
+            session_id=result.session_id,
+            cost_usd=result.cost_usd,
+            duration_ms=result.duration_ms,
+            num_turns=result.num_turns,
+            model=model,
+            raw_output=result.raw_output,
+        )
+    return result
 
 
 def parse_claude_output(output: ClaudeOutput) -> ClaudeResult:
@@ -41,4 +73,5 @@ def parse_claude_output(output: ClaudeOutput) -> ClaudeResult:
         cost_usd=raw.get("cost_usd"),
         duration_ms=raw.get("duration_ms"),
         num_turns=raw.get("num_turns"),
+        model=raw.get("model") if isinstance(raw.get("model"), str) else None,
     )

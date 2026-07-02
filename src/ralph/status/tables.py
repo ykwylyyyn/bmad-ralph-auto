@@ -114,8 +114,10 @@ def worker_table(
         )
         health = _style_health(worker.display_health, active_theme)
         worker_id = active_theme.bold(f"W{worker.id}")
+        backend_label = f" [{worker.backend}]" if worker.backend else ""
+        model_label = f" ({worker.model})" if worker.model else ""
         lines.append(
-            f"  {worker_id}   {health}   {assignment}   uptime {worker.uptime}"
+            f"  {worker_id}   {health}   {assignment}   uptime {worker.uptime}{backend_label}{model_label}"
         )
     return lines
 

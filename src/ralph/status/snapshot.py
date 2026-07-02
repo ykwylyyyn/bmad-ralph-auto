@@ -79,6 +79,9 @@ class StoryDetail:
     duration: str
     retries: str
     events: list[StoryEvent] = field(default_factory=list)
+    backend: str | None = None
+    model: str | None = None
+    cost_usd: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +91,8 @@ class WorkerDetail:
     assigned_story_id: int | None
     uptime: str
     log_excerpt: list[str] = field(default_factory=list)
+    backend: str | None = None
+    model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +159,7 @@ def load_status_snapshot(
         ).fetchall()
         worker_rows = connection.execute(
             """
-            SELECT id, state, health, created_at, updated_at
+            SELECT id, state, health, backend, model, created_at, updated_at
             FROM workers
             ORDER BY id
             """
@@ -166,6 +171,13 @@ def load_status_snapshot(
             ORDER BY id
             """
         ).fetchall()
+        memory_rows = connection.execute(
+            """
+            SELECT story_id, key, value_json
+            FROM story_memory
+            WHERE key IN ('run.backend', 'run.model', 'run.cost_usd')
+            """
+        ).fetchall()
     finally:
         connection.close()
 
@@ -174,6 +186,7 @@ def load_status_snapshot(
         story_rows,
         worker_rows,
         healing_rows,
+        memory_rows=memory_rows,
         logs_dir=paths.logs_dir if detail else None,
     )
 
@@ -228,7 +241,15 @@ def _empty_snapshot(daemon, *, active_workers: int) -> StatusSnapshot:
     )
 
 
-def _build_snapshot(daemon, story_rows, worker_rows, healing_rows, *, logs_dir: Path | None) -> StatusSnapshot:
+def _build_snapshot(
+    daemon,
+    story_rows,
+    worker_rows,
+    healing_rows,
+    *,
+    memory_rows: list[sqlite3.Row] | None = None,
+    logs_dir: Path | None = None,
+) -> StatusSnapshot:
     healing_by_story: dict[int, list[sqlite3.Row]] = {}
     latest_healing: dict[int, str] = {}
     healing_count_by_story: dict[int, int] = {}
@@ -237,6 +258,8 @@ def _build_snapshot(daemon, story_rows, worker_rows, healing_rows, *, logs_dir: 
         healing_count_by_story[story_id] = healing_count_by_story.get(story_id, 0) + 1
         latest_healing[story_id] = str(row["layer"])
         healing_by_story.setdefault(story_id, []).append(row)
+
+    run_metadata = _parse_run_metadata(memory_rows or [])
 
     counts = StoryCounts()
     failed_story_ids: list[int] = []
@@ -259,6 +282,22 @@ def _build_snapshot(daemon, story_rows, worker_rows, healing_rows, *, logs_dir: 
             daemon.heartbeat_at,
         )
         events = _story_events(story_id, healing_by_story.get(story_id, []), row)
+        run_info = run_metadata.get(story_id, {})
+        backend = run_info.get("backend")
+        model = run_info.get("model")
+        cost_usd = run_info.get("cost_usd")
+        if backend or model or cost_usd is not None:
+            cost_text = f"${cost_usd:.4f}" if isinstance(cost_usd, (int, float)) else "—"
+            events.append(
+                StoryEvent(
+                    timestamp="—",
+                    text=(
+                        f"Backend: {backend or '—'} | "
+                        f"Model: {model or '—'} | "
+                        f"Cost: {cost_text}"
+                    ),
+                )
+            )
         stories.append(
             StoryDetail(
                 id=story_id,
@@ -268,6 +307,9 @@ def _build_snapshot(daemon, story_rows, worker_rows, healing_rows, *, logs_dir: 
                 duration=duration,
                 retries=retries,
                 events=events,
+                backend=str(backend) if backend else None,
+                model=str(model) if model else None,
+                cost_usd=float(cost_usd) if isinstance(cost_usd, (int, float)) else None,
             )
         )
 
@@ -304,6 +346,8 @@ def _build_snapshot(daemon, story_rows, worker_rows, healing_rows, *, logs_dir: 
         display_health = _worker_display_health(health, worker_state)
         uptime = format_duration_between(str(row["created_at"]), daemon.heartbeat_at)
         log_excerpt = _read_log_excerpt(logs_dir, worker_id) if logs_dir is not None else []
+        backend = str(row["backend"]) if row["backend"] is not None else None
+        model = str(row["model"]) if row["model"] is not None else None
         workers.append(
             WorkerDetail(
                 id=worker_id,
@@ -311,6 +355,8 @@ def _build_snapshot(daemon, story_rows, worker_rows, healing_rows, *, logs_dir: 
                 assigned_story_id=worker_assignments.get(worker_id),
                 uptime=uptime,
                 log_excerpt=log_excerpt,
+                backend=backend,
+                model=model,
             )
         )
 
@@ -333,6 +379,25 @@ def _build_snapshot(daemon, story_rows, worker_rows, healing_rows, *, logs_dir: 
         self_healed_count=self_healed,
         recovery_story_count=recovery_story_count,
     )
+
+
+def _parse_run_metadata(rows: list[sqlite3.Row]) -> dict[int, dict[str, object]]:
+    metadata: dict[int, dict[str, object]] = {}
+    for row in rows:
+        story_id = int(row["story_id"])
+        key = str(row["key"])
+        try:
+            value = json.loads(row["value_json"])
+        except json.JSONDecodeError:
+            continue
+        entry = metadata.setdefault(story_id, {})
+        if key == "run.backend":
+            entry["backend"] = value
+        elif key == "run.model":
+            entry["model"] = value
+        elif key == "run.cost_usd":
+            entry["cost_usd"] = value
+    return metadata
 
 
 def _story_duration(created_at: str, updated_at: str, state: StoryState, heartbeat_at: str | None) -> str:

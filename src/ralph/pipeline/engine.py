@@ -14,6 +14,7 @@ from ralph.pipeline.orchestrator import StoryCycleOrchestrator
 from ralph.pipeline.recovery import recover_orphaned_stories
 from ralph.pipeline.scheduler import StoryScheduler
 from ralph.pipeline.story_cycle import StoryCycleConfig
+from ralph.router import BackendSelector, RouterConfig
 from ralph.verifier import VerifierConfig, VerifierRunner
 from ralph.worker.errors import WorkerSpawnError
 from ralph.worker.manager import WorkerExit, WorkerManager, story_state_for_result
@@ -68,16 +69,19 @@ class PipelineEngine:
         retry_limit: int = 3,
         verifier_config: VerifierConfig | None = None,
         story_cycle_config: StoryCycleConfig | None = None,
+        router_config: RouterConfig | None = None,
     ) -> None:
         self._store = store
         self._project_dir = project_dir.resolve()
         self._scheduler = StoryScheduler(max_workers)
         self._worktrees_dir = worktrees_dir
         self._logs_dir = logs_dir
+        backend_selector = BackendSelector(router_config or RouterConfig())
         self._worker_manager = worker_manager or WorkerManager(
             project_dir,
             worktrees_dir,
             logs_dir=logs_dir,
+            backend_selector=backend_selector,
         )
         self._graph: DependencyGraph | None = None
         self._cycle_config = (story_cycle_config or StoryCycleConfig()).effective()
@@ -234,6 +238,7 @@ class PipelineEngine:
                 active = self._worker_manager.spawn_for_story(
                     worker.id,
                     story,
+                    step=step,
                     prompt=prompt,
                     worktree_path=Path(worktree_raw) if worktree_raw else None,
                 )
@@ -271,6 +276,8 @@ class PipelineEngine:
                     health=WorkerHealth.HEALTHY,
                     worktree_path=str(active.worktree_path),
                     pid=active.session.pid,
+                    backend=active.backend,
+                    model=active.backend_model,
                 )
             )
             assignments.append(AssignmentResult(story_id=story.id, worker_id=worker.id))
@@ -349,6 +356,8 @@ class PipelineEngine:
             if not self._orchestrator.enabled or not self._orchestrator.has_more_steps(exit_event.story_id):
                 self._worker_manager.release_worktree(exit_event)
             return
+
+        self._record_run_metadata(exit_event)
 
         if self._orchestrator.enabled:
             self._handle_cycle_completion(exit_event)
@@ -489,6 +498,34 @@ class PipelineEngine:
             cycle_complete=cycle_complete,
         )
 
+    def _record_run_metadata(self, exit_event: WorkerExit) -> None:
+        model = exit_event.backend_model
+        cost_usd = None
+        if exit_event.result is not None:
+            if exit_event.result.model:
+                model = exit_event.result.model
+            cost_usd = exit_event.result.cost_usd
+
+        self._memory.set_context(exit_event.story_id, "run.backend", exit_event.backend)
+        if model:
+            self._memory.set_context(exit_event.story_id, "run.model", model)
+        if cost_usd is not None:
+            self._memory.set_context(exit_event.story_id, "run.cost_usd", cost_usd)
+
+        worker = self._store.get_worker(exit_event.worker_id)
+        self._store.upsert_worker(
+            WorkerRecord(
+                id=worker.id,
+                state=worker.state,
+                health=worker.health,
+                worktree_path=worker.worktree_path,
+                pid=worker.pid,
+                backend=exit_event.backend,
+                model=model,
+                cost_usd=cost_usd,
+            )
+        )
+
     def _verify_and_finish(self, exit_event: WorkerExit) -> None:
         story = self._store.get_story(exit_event.story_id)
         if story.state != StoryState.VERIFYING:
@@ -601,6 +638,8 @@ class PipelineEngine:
                     health=report.health,
                     worktree_path=str(active.worktree_path),
                     pid=report.pid,
+                    backend=active.backend,
+                    model=active.backend_model,
                 )
             )
 
