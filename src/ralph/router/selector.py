@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ralph.router.config import BackendDefinition, RouterConfig
+from ralph.router.fallback import FallbackChain
 from ralph.worker.backends.claude import ClaudeBackend
 from ralph.worker.backends.command import CommandBackend, CommandBackendConfig
 from ralph.worker.backends.base import WorkerBackend
@@ -14,6 +15,11 @@ class BackendSelector:
     def __init__(self, config: RouterConfig | None = None) -> None:
         self._config = (config or RouterConfig()).effective()
         self._backends = self._build_backends()
+        self._fallback = FallbackChain(self)
+
+    @property
+    def fallback(self) -> FallbackChain:
+        return self._fallback
 
     @classmethod
     def default(cls) -> BackendSelector:

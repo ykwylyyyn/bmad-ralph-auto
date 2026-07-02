@@ -83,6 +83,7 @@ class StateStore:
         _ensure_story_columns(self._connection)
         _ensure_worker_columns(self._connection)
         _ensure_story_memory_table(self._connection)
+        _ensure_sprint_memory_table(self._connection)
         self._connection.commit()
 
     def is_wal_enabled(self) -> bool:
@@ -418,6 +419,36 @@ class StateStore:
                 (story_id, key),
             )
 
+    def get_sprint_memory(self, key: str) -> object | None:
+        row = self._connection.execute(
+            """
+            SELECT value_json
+            FROM sprint_memory
+            WHERE key = ?
+            """,
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value_json"])
+        except json.JSONDecodeError:
+            return None
+
+    def set_sprint_memory(self, key: str, value: object) -> None:
+        now = _now()
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO sprint_memory (key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                (key, json.dumps(value), now),
+            )
+
     def upsert_worker(self, worker: WorkerRecord) -> WorkerRecord:
         now = _now()
         with self._connection:
@@ -710,6 +741,18 @@ def _ensure_story_memory_table(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             PRIMARY KEY (story_id, key),
             FOREIGN KEY(story_id) REFERENCES stories(id)
+        )
+        """
+    )
+
+
+def _ensure_sprint_memory_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sprint_memory (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
         """
     )
