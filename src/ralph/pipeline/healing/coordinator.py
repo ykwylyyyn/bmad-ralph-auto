@@ -5,6 +5,8 @@ from pathlib import Path
 
 from ralph.common.db.store import StateStore
 from ralph.common.models import PipelineState, Story, StoryState
+from ralph.failure.taxonomy import classify_failure
+from ralph.memory.sprint_store import SprintMemoryStore
 from ralph.pipeline.healing.diagnose import DiagnoseRequest, Layer3Diagnose, StoryDiagnoseContext
 from ralph.pipeline.healing.step_retry import Layer1StepRetry, StepFailure
 from ralph.pipeline.healing.types import HealingOutcomeKind
@@ -80,6 +82,41 @@ class HealingCoordinator:
         reason: str,
         log_excerpt: list[str] | None = None,
     ) -> None:
+        classification = classify_failure(reason, log_excerpt=log_excerpt)
+        sprint_memory = SprintMemoryStore(self._store)
+        sprint_memory.record_failure_pattern(classification.category.value, reason)
+        self._store.record_pipeline_event(
+            "failure_classified",
+            {
+                "story_id": story_id,
+                "worker_id": worker_id,
+                "category": classification.category.value,
+                "confidence": classification.confidence,
+                "retryable": classification.retryable,
+                "prefer_worker_restart": classification.prefer_worker_restart,
+            },
+        )
+
+        if classification.prefer_worker_restart:
+            restart = self._layer2.handle_escalation(
+                WorkerRestartRequest(
+                    story_id=story_id,
+                    worker_id=worker_id,
+                    reason=f"[{classification.category.value}] {reason}",
+                )
+            )
+            if restart.kind == HealingOutcomeKind.ESCALATE_LAYER3:
+                self._escalate_to_diagnose(
+                    story_id,
+                    worker_id,
+                    restart.reason or reason,
+                    log_excerpt,
+                    classification.category.value,
+                )
+            else:
+                self._store.set_pipeline_state(PipelineState.HEALING)
+            return
+
         failure = StepFailure(story_id=story_id, worker_id=worker_id, reason=reason)
         outcome = self._layer1.handle_step_failure(failure)
 
@@ -110,6 +147,7 @@ class HealingCoordinator:
         worker_id: int,
         reason: str,
         log_excerpt: list[str] | None,
+        failure_category: str | None = None,
     ) -> None:
         story = self._store.get_story(story_id)
         context = StoryDiagnoseContext(
@@ -120,6 +158,11 @@ class HealingCoordinator:
             DiagnoseRequest(story_id=story_id, worker_id=worker_id, reason=reason),
             context=context,
         )
+        if failure_category:
+            self._store.record_pipeline_event(
+                "diagnose_with_category",
+                {"story_id": story_id, "category": failure_category},
+            )
         if outcome.kind == HealingOutcomeKind.EXHAUSTED:
             pass  # Layer 3 already marks the story failed.
         self._store.set_pipeline_state(PipelineState.HEALING)

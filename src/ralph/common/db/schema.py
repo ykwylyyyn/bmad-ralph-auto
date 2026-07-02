@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS sprint_memory (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS story_memory (
     story_id INTEGER NOT NULL,
     key TEXT NOT NULL,

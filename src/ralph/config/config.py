@@ -7,6 +7,8 @@ import tomllib
 from ralph.verifier.config import VerifierConfig
 from ralph.pipeline.story_cycle import StoryCycleConfig
 from ralph.router.config import RouterConfig
+from ralph.orchestrator.config import OrchestratorConfig
+from ralph.api.server import ApiServerConfig
 
 DEFAULT_MAX_WORKERS = 5
 DEFAULT_RETRY_LIMIT = 3
@@ -19,6 +21,8 @@ class RalphConfig:
     verifier: VerifierConfig | None = None
     story_cycle: StoryCycleConfig | None = None
     router: RouterConfig | None = None
+    orchestrator: OrchestratorConfig | None = None
+    api: ApiServerConfig | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, object]) -> "RalphConfig":
@@ -49,12 +53,24 @@ class RalphConfig:
         if raw_router is not None:
             router = RouterConfig.from_mapping(raw_router)
 
+        orchestrator = None
+        raw_orchestrator = data.get("orchestrator")
+        if raw_orchestrator is not None:
+            orchestrator = OrchestratorConfig.from_mapping(raw_orchestrator)
+
+        api = None
+        raw_api = data.get("api")
+        if raw_api is not None:
+            api = ApiServerConfig.from_mapping(raw_api)
+
         return cls(
             max_workers=max_workers,
             retry_limit=retry_limit,
             verifier=verifier,
             story_cycle=story_cycle,
             router=router,
+            orchestrator=orchestrator,
+            api=api,
         )
 
     def merge(self, other: "RalphConfig") -> "RalphConfig":
@@ -64,18 +80,24 @@ class RalphConfig:
             verifier=other.verifier if other.verifier is not None else self.verifier,
             story_cycle=other.story_cycle if other.story_cycle is not None else self.story_cycle,
             router=other.router if other.router is not None else self.router,
+            orchestrator=other.orchestrator if other.orchestrator is not None else self.orchestrator,
+            api=other.api if other.api is not None else self.api,
         )
 
     def effective(self) -> "RalphConfig":
         verifier = self.verifier or VerifierConfig()
         story_cycle = self.story_cycle or StoryCycleConfig()
         router = self.router or RouterConfig()
+        orchestrator = self.orchestrator or OrchestratorConfig()
+        api = self.api or ApiServerConfig()
         return RalphConfig(
             max_workers=self.max_workers or DEFAULT_MAX_WORKERS,
             retry_limit=self.retry_limit or DEFAULT_RETRY_LIMIT,
             verifier=verifier.effective(),
             story_cycle=story_cycle.effective(),
             router=router.effective(),
+            orchestrator=orchestrator.effective(),
+            api=api.effective(),
         )
 
 

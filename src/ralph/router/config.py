@@ -54,6 +54,7 @@ class RouterConfig:
     default: str = DEFAULT_BACKEND
     backends: dict[str, BackendDefinition] = field(default_factory=dict)
     rules: dict[str, str] = field(default_factory=dict)
+    fallback: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, data: object) -> RouterConfig:
@@ -88,7 +89,22 @@ class RouterConfig:
                 continue
             rules[step.strip().lower()] = backend_name.strip()
 
-        return cls(default=default.strip(), backends=backends, rules=rules)
+        raw_fallback = data.get("fallback", {})
+        if raw_fallback is None:
+            raw_fallback = {}
+        if not isinstance(raw_fallback, dict):
+            raise ValueError("router.fallback must be a table")
+
+        fallback: dict[str, tuple[str, ...]] = {}
+        for step, chain in raw_fallback.items():
+            if not isinstance(step, str):
+                continue
+            if isinstance(chain, str):
+                fallback[step.strip().lower()] = (chain.strip(),)
+            elif isinstance(chain, list) and all(isinstance(item, str) for item in chain):
+                fallback[step.strip().lower()] = tuple(item.strip() for item in chain if item.strip())
+
+        return cls(default=default.strip(), backends=backends, rules=rules, fallback=fallback)
 
     @property
     def enabled(self) -> bool:
@@ -101,4 +117,5 @@ class RouterConfig:
             default=self.default if self.default in self.backends else next(iter(self.backends)),
             backends=self.backends,
             rules=self.rules,
+            fallback=self.fallback,
         )

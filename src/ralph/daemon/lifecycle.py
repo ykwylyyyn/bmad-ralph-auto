@@ -13,7 +13,9 @@ from ralph.common.db import StateStore
 from ralph.common.protocol import Request
 from ralph.common.subprocess_util import run_text_capture
 from ralph.config import RalphConfig
-from ralph.pipeline.engine import PipelineEngine
+from ralph.api.handlers import ApiHandlers
+from ralph.api.server import ApiServer
+from ralph.orchestrator.controller import UnifiedOrchestrator
 
 from .ipc import IpcServer, request_daemon, status_response
 from .runtime import RuntimePaths
@@ -159,18 +161,25 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
     paths.ensure()
     store = StateStore.open(paths.database_file)
     recovered = store.load_snapshot()
-    engine = PipelineEngine(
+    effective = config.effective()
+    orchestrator = UnifiedOrchestrator(
         store,
         project_dir=paths.project_dir,
-        max_workers=config.effective().max_workers or 5,
+        max_workers=effective.max_workers or 5,
         worktrees_dir=paths.worktrees_dir,
         logs_dir=paths.logs_dir,
-        retry_limit=config.effective().retry_limit or 3,
-        verifier_config=config.effective().verifier,
-        story_cycle_config=config.effective().story_cycle,
-        router_config=config.effective().router,
+        retry_limit=effective.retry_limit or 3,
+        verifier_config=effective.verifier,
+        story_cycle_config=effective.story_cycle,
+        router_config=effective.router,
+        orchestrator_config=effective.orchestrator,
     )
-    pipeline_state = engine.initialize()
+    pipeline_state = orchestrator.initialize()
+    api_server = ApiServer(
+        effective.api,
+        lambda: ApiHandlers(store, str(paths.project_dir)),
+    )
+    api_server.start()
     started_at = _now()
     pid = os.getpid()
     paths.pid_file.write_text(str(pid), encoding="utf-8")
@@ -186,22 +195,23 @@ def run_daemon(project_dir: str | Path, config: RalphConfig, heartbeat_secs: flo
 
     try:
         while not should_stop and not paths.stop_file.exists():
-            tick = engine.tick()
+            tick = orchestrator.tick()
             status = DaemonStatus(
                 state="running",
                 pid=pid,
                 project_dir=str(paths.project_dir),
-                max_workers=config.effective().max_workers or 5,
+                max_workers=effective.max_workers or 5,
                 started_at=started_at,
                 heartbeat_at=_now(),
-                message=engine.status_message(tick),
+                message=orchestrator.status_message(tick),
             )
             _write_status(paths, status)
             should_stop = ipc.poll(lambda request: _handle_request(request, status, paths))
             if not should_stop:
                 time.sleep(heartbeat_secs)
     finally:
-        engine.shutdown()
+        api_server.stop()
+        orchestrator.shutdown()
         store.close()
         ipc.close()
         _remove_if_exists(paths.pid_file)

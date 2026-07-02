@@ -39,6 +39,7 @@ class CommonTests(unittest.TestCase):
                 "healing_attempts",
                 "pipeline_events",
                 "pipeline_state",
+                "sprint_memory",
                 "stories",
                 "story_dependencies",
                 "story_memory",
