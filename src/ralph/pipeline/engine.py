@@ -6,13 +6,18 @@ from pathlib import Path
 from ralph.common.db.store import StateStore, WorkerRecord
 from ralph.common.models import PipelineState, Story, StoryState, WorkerHealth, WorkerState
 from ralph.pipeline.dependency_graph import DependencyGraph
+from ralph.memory.progress import sync_story_progress
+from ralph.memory.store import MemoryStore
 from ralph.pipeline.healing.coordinator import EngineRestartGateway, HealingCoordinator
 from ralph.pipeline.ingestion import build_dependency_graph
+from ralph.pipeline.orchestrator import StoryCycleOrchestrator
 from ralph.pipeline.recovery import recover_orphaned_stories
 from ralph.pipeline.scheduler import StoryScheduler
+from ralph.pipeline.story_cycle import StoryCycleConfig
 from ralph.verifier import VerifierConfig, VerifierRunner
 from ralph.worker.errors import WorkerSpawnError
 from ralph.worker.manager import WorkerExit, WorkerManager, story_state_for_result
+from ralph.worker.prompt import build_step_prompt, load_prompt_context
 
 _TERMINAL_STORY_STATES = {StoryState.DONE, StoryState.FAILED}
 _ACTIVE_STORY_STATES = {
@@ -62,6 +67,7 @@ class PipelineEngine:
         worker_manager: WorkerManager | None = None,
         retry_limit: int = 3,
         verifier_config: VerifierConfig | None = None,
+        story_cycle_config: StoryCycleConfig | None = None,
     ) -> None:
         self._store = store
         self._project_dir = project_dir.resolve()
@@ -74,6 +80,9 @@ class PipelineEngine:
             logs_dir=logs_dir,
         )
         self._graph: DependencyGraph | None = None
+        self._cycle_config = (story_cycle_config or StoryCycleConfig()).effective()
+        self._memory = MemoryStore(store)
+        self._orchestrator = StoryCycleOrchestrator(self._memory, self._cycle_config)
         self._verifier = VerifierRunner(verifier_config or VerifierConfig())
         restart_gateway = EngineRestartGateway(
             store,
@@ -203,9 +212,31 @@ class PipelineEngine:
             if len(assignments) >= snapshot.available_slots:
                 break
 
+            step = self._orchestrator.current_step(story.id)
+            if self._orchestrator.enabled and self._orchestrator.is_verify_step(step):
+                worktree_raw = self._memory.get_worktree_path(story.id)
+                if worktree_raw is None:
+                    next_step = self._orchestrator.complete_step(story.id, step)
+                    if next_step is None:
+                        self._store.transition_story_state(story.id, StoryState.IN_REVIEW)
+                        self._sync_progress_for_story(story.id, step, cycle_complete=True)
+                    continue
+
+                self._store.assign_story_to_worker(story.id, worker.id)
+                self._run_cycle_verify(story.id, worker.id, Path(worktree_raw))
+                assignments.append(AssignmentResult(story_id=story.id, worker_id=worker.id))
+                continue
+
             self._store.assign_story_to_worker(story.id, worker.id)
             try:
-                active = self._worker_manager.spawn_for_story(worker.id, story)
+                prompt = self._build_prompt_for_story(story, step)
+                worktree_raw = self._memory.get_worktree_path(story.id)
+                active = self._worker_manager.spawn_for_story(
+                    worker.id,
+                    story,
+                    prompt=prompt,
+                    worktree_path=Path(worktree_raw) if worktree_raw else None,
+                )
             except WorkerSpawnError as exc:
                 self._store.rollback_story_assignment(story.id)
                 self._store.upsert_worker(
@@ -229,6 +260,9 @@ class PipelineEngine:
                     SpawnFailure(story_id=story.id, worker_id=worker.id, reason=exc.reason)
                 )
                 continue
+
+            if self._orchestrator.enabled and self._memory.get_worktree_path(story.id) is None:
+                self._memory.set_worktree_path(story.id, str(active.worktree_path))
 
             self._store.upsert_worker(
                 WorkerRecord(
@@ -299,22 +333,31 @@ class PipelineEngine:
         if exit_event.result is None:
             return
 
-        target_state = story_state_for_result(exit_event.result)
         story = self._store.get_story(exit_event.story_id)
         if story.state != StoryState.IN_PROGRESS:
             return
 
-        self._release_worker(exit_event.worker_id)
-
+        target_state = story_state_for_result(exit_event.result)
         if target_state == StoryState.FAILED:
+            self._release_worker(exit_event.worker_id)
             self._healing.handle_failure(
                 story_id=exit_event.story_id,
                 worker_id=exit_event.worker_id,
                 reason=exit_event.result.error or "worker reported failure",
                 log_excerpt=self._log_excerpt(exit_event),
             )
-            self._worker_manager.release_worktree(exit_event)
+            if not self._orchestrator.enabled or not self._orchestrator.has_more_steps(exit_event.story_id):
+                self._worker_manager.release_worktree(exit_event)
             return
+
+        if self._orchestrator.enabled:
+            self._handle_cycle_completion(exit_event)
+            return
+
+        self._handle_legacy_completion(exit_event)
+
+    def _handle_legacy_completion(self, exit_event: WorkerExit) -> None:
+        self._release_worker(exit_event.worker_id)
 
         if self._verifier.enabled:
             self._store.transition_story_state(exit_event.story_id, StoryState.VERIFYING)
@@ -324,6 +367,127 @@ class PipelineEngine:
 
         self._store.transition_story_state(exit_event.story_id, StoryState.IN_REVIEW)
         self._worker_manager.release_worktree(exit_event)
+
+    def _handle_cycle_completion(self, exit_event: WorkerExit) -> None:
+        step = self._orchestrator.current_step(exit_event.story_id)
+        self._memory.append_event(
+            exit_event.story_id,
+            {"type": "step_complete", "step": step},
+        )
+        self._sync_progress_for_story(exit_event.story_id, step)
+
+        next_step = self._orchestrator.complete_step(exit_event.story_id, step)
+        self._release_worker(exit_event.worker_id)
+        self._memory.set_worktree_path(exit_event.story_id, str(exit_event.worktree_path))
+
+        if next_step is None:
+            self._store.transition_story_state(exit_event.story_id, StoryState.IN_REVIEW)
+            self._sync_progress_for_story(exit_event.story_id, step, cycle_complete=True)
+            self._memory.clear_cycle(exit_event.story_id)
+            self._worker_manager.release_worktree(exit_event)
+            return
+
+        self._store.requeue_story(exit_event.story_id)
+
+    def _run_cycle_verify(self, story_id: int, worker_id: int, worktree_path: Path) -> None:
+        if not self._verifier.enabled:
+            next_step = self._orchestrator.complete_step(story_id, "verify")
+            self._sync_progress_for_story(story_id, "verify", cycle_complete=next_step is None)
+            self._finish_cycle_step(story_id, worker_id, worktree_path, next_step)
+            return
+
+        self._store.transition_story_state(story_id, StoryState.VERIFYING)
+        result = self._verifier.run(worktree_path)
+        if result.passed:
+            self._memory.append_event(story_id, {"type": "verify_passed"})
+            self._store.record_pipeline_event(
+                "verification_passed",
+                {"story_id": story_id, "step": "verify"},
+            )
+            next_step = self._orchestrator.complete_step(story_id, "verify")
+            self._sync_progress_for_story(story_id, "verify", cycle_complete=next_step is None)
+            self._finish_cycle_step(story_id, worker_id, worktree_path, next_step)
+            return
+
+        log_excerpt = [failure.stderr for failure in result.failures if failure.stderr]
+        self._release_worker(worker_id)
+        self._healing.handle_failure(
+            story_id=story_id,
+            worker_id=worker_id,
+            reason=result.summary,
+            log_excerpt=log_excerpt,
+        )
+        self._store.record_pipeline_event(
+            "verification_failed",
+            {
+                "story_id": story_id,
+                "summary": result.summary,
+                "failures": [
+                    {
+                        "command": failure.command,
+                        "exit_code": failure.exit_code,
+                        "stderr": failure.stderr,
+                    }
+                    for failure in result.failures
+                ],
+            },
+        )
+
+    def _finish_cycle_step(
+        self,
+        story_id: int,
+        worker_id: int,
+        worktree_path: Path,
+        next_step: str | None,
+    ) -> None:
+        self._release_worker(worker_id)
+        if next_step is None:
+            self._store.transition_story_state(story_id, StoryState.IN_REVIEW)
+            self._memory.clear_cycle(story_id)
+            exit_event = WorkerExit(
+                worker_id=worker_id,
+                story_id=story_id,
+                result=None,
+                exit_kind="completed",
+                exit_code=0,
+                branch="",
+                worktree_path=worktree_path,
+            )
+            self._worker_manager.release_worktree(exit_event)
+            return
+        self._store.requeue_story(story_id)
+        self._memory.set_worktree_path(story_id, str(worktree_path))
+
+    def _build_prompt_for_story(self, story: Story, step: str) -> str:
+        progress = self._memory.get_progress(story.id)
+        events = progress.get("events", [])
+        memory_events = events if isinstance(events, list) else []
+        context = load_prompt_context(
+            self._project_dir,
+            story,
+            step,
+            memory_events=memory_events,
+            max_chars=self._cycle_config.prompt_max_chars,
+        )
+        return build_step_prompt(story, step, context)
+
+    def _sync_progress_for_story(
+        self,
+        story_id: int,
+        step: str,
+        *,
+        cycle_complete: bool = False,
+    ) -> None:
+        story = self._store.get_story(story_id)
+        if not story.key:
+            return
+        sync_story_progress(
+            self._project_dir,
+            story.key,
+            step,
+            artifacts_dir=self._cycle_config.artifacts_dir,
+            cycle_complete=cycle_complete,
+        )
 
     def _verify_and_finish(self, exit_event: WorkerExit) -> None:
         story = self._store.get_story(exit_event.story_id)

@@ -68,7 +68,14 @@ class WorkerManager:
     def logs_dir(self) -> Path | None:
         return self._logs_dir
 
-    def spawn_for_story(self, worker_id: int, story: Story) -> ActiveWorkerSession:
+    def spawn_for_story(
+        self,
+        worker_id: int,
+        story: Story,
+        *,
+        prompt: str | None = None,
+        worktree_path: Path | None = None,
+    ) -> ActiveWorkerSession:
         if worker_id in self._active:
             raise WorkerSpawnError(worker_id, story.id, "worker already has an active session")
 
@@ -76,22 +83,26 @@ class WorkerManager:
             raise WorkerSpawnError(worker_id, story.id, "project directory is not a git repository")
 
         branch = story_branch_name(story.id, story.key)
-        worktree_path = self._worktrees_dir / f"worker-{worker_id}"
+        resolved_worktree = worktree_path.resolve() if worktree_path is not None else self._worktrees_dir / f"worker-{worker_id}"
 
         process = self._process.with_context(logs_dir=self._logs_dir, worker_id=worker_id)
         try:
-            self._worktrees.create(self._project_dir, worktree_path, branch)
-            prompt = build_story_prompt(story)
-            session = process.spawn(worktree_path, prompt)
+            if worktree_path is None:
+                self._worktrees.create(self._project_dir, resolved_worktree, branch)
+            elif not resolved_worktree.is_dir():
+                raise WorkerSpawnError(worker_id, story.id, f"worktree does not exist: {resolved_worktree}")
+            session_prompt = prompt or build_story_prompt(story)
+            session = process.spawn(resolved_worktree, session_prompt)
         except (WorktreeError, OSError) as exc:
-            self._safe_destroy(worktree_path, branch)
+            if worktree_path is None:
+                self._safe_destroy(resolved_worktree, branch)
             raise WorkerSpawnError(worker_id, story.id, str(exc)) from exc
 
         active = ActiveWorkerSession(
             worker_id=worker_id,
             story_id=story.id,
             branch=branch,
-            worktree_path=worktree_path,
+            worktree_path=resolved_worktree,
             session=session,
         )
         self._active[worker_id] = active

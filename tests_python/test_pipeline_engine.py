@@ -13,7 +13,9 @@ from ralph.common.db.store import WorkerRecord
 from ralph.pipeline.engine import PipelineEngine
 from ralph.pipeline.ingestion import build_dependency_graph
 from ralph.common.models import PipelineState
+from ralph.pipeline.story_cycle import StoryCycleConfig
 from ralph.verifier.config import VerifierConfig
+from ralph.worker.prompt import build_step_prompt, load_prompt_context
 
 from helpers import fake_claude_process, init_git_repo, worker_manager_for_repo
 
@@ -206,6 +208,24 @@ class PipelineEngineTests(unittest.TestCase):
         finally:
             store.close()
             tempdir.cleanup()
+
+    def test_story_cycle_builds_step_prompt_with_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            skill_dir = root / ".claude" / "skills" / "bmad-bmm-dev-story"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("# Dev skill\nUse TDD.\n", encoding="utf-8")
+
+            story = Story(id=8001, title="Cycle", key="8-1-cycle", acceptance_criteria=["works"])
+            context = load_prompt_context(root, story, "dev")
+            prompt = build_step_prompt(story, "dev", context)
+            self.assertIn("cycle step `dev`", prompt)
+            self.assertIn("bmad-bmm-dev-story", prompt)
+            self.assertIn("Use TDD", prompt)
+
+    def test_story_cycle_config_disabled_preserves_legacy_path(self) -> None:
+        config = StoryCycleConfig().effective()
+        self.assertFalse(config.enabled)
 
 
 if __name__ == "__main__":

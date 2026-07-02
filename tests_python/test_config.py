@@ -69,6 +69,24 @@ commands = ["make test-all", "python -m pytest -q"]
         config = RalphConfig(verifier=VerifierConfig(enabled=True, commands=())).effective()
         self.assertFalse(config.verifier.enabled)
 
+    def test_parse_story_cycle_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ralph.toml"
+            path.write_text(
+                """
+[story_cycle]
+enabled = true
+steps = ["dev", "verify"]
+max_step_retries = 2
+artifacts_dir = "_bmad-output"
+""".strip(),
+                encoding="utf-8",
+            )
+            config = load_config(path).effective()
+            self.assertTrue(config.story_cycle.enabled)
+            self.assertEqual(config.story_cycle.steps, ("dev", "verify"))
+            self.assertEqual(config.story_cycle.max_step_retries, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

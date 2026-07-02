@@ -78,6 +78,7 @@ class StateStore:
     def initialize(self) -> None:
         apply_schema(self._connection)
         _ensure_story_columns(self._connection)
+        _ensure_story_memory_table(self._connection)
         self._connection.commit()
 
     def is_wal_enabled(self) -> bool:
@@ -376,6 +377,43 @@ class StateStore:
             )
         return events
 
+    def get_story_memory(self, story_id: int, key: str) -> object | None:
+        row = self._connection.execute(
+            """
+            SELECT value_json
+            FROM story_memory
+            WHERE story_id = ? AND key = ?
+            """,
+            (story_id, key),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value_json"])
+        except json.JSONDecodeError:
+            return None
+
+    def set_story_memory(self, story_id: int, key: str, value: object) -> None:
+        now = _now()
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO story_memory (story_id, key, value_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(story_id, key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                (story_id, key, json.dumps(value), now),
+            )
+
+    def delete_story_memory(self, story_id: int, key: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "DELETE FROM story_memory WHERE story_id = ? AND key = ?",
+                (story_id, key),
+            )
+
     def upsert_worker(self, worker: WorkerRecord) -> WorkerRecord:
         now = _now()
         with self._connection:
@@ -624,3 +662,18 @@ def _ensure_story_columns(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE stories ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '[]'"
         )
+
+
+def _ensure_story_memory_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS story_memory (
+            story_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (story_id, key),
+            FOREIGN KEY(story_id) REFERENCES stories(id)
+        )
+        """
+    )

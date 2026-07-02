@@ -5,6 +5,7 @@ from pathlib import Path
 import tomllib
 
 from ralph.verifier.config import VerifierConfig
+from ralph.pipeline.story_cycle import StoryCycleConfig
 
 DEFAULT_MAX_WORKERS = 5
 DEFAULT_RETRY_LIMIT = 3
@@ -15,6 +16,7 @@ class RalphConfig:
     max_workers: int | None = None
     retry_limit: int | None = None
     verifier: VerifierConfig | None = None
+    story_cycle: StoryCycleConfig | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, object]) -> "RalphConfig":
@@ -35,21 +37,34 @@ class RalphConfig:
         if raw_verifier is not None:
             verifier = VerifierConfig.from_mapping(raw_verifier)
 
-        return cls(max_workers=max_workers, retry_limit=retry_limit, verifier=verifier)
+        story_cycle = None
+        raw_story_cycle = data.get("story_cycle")
+        if raw_story_cycle is not None:
+            story_cycle = StoryCycleConfig.from_mapping(raw_story_cycle)
+
+        return cls(
+            max_workers=max_workers,
+            retry_limit=retry_limit,
+            verifier=verifier,
+            story_cycle=story_cycle,
+        )
 
     def merge(self, other: "RalphConfig") -> "RalphConfig":
         return RalphConfig(
             max_workers=other.max_workers if other.max_workers is not None else self.max_workers,
             retry_limit=other.retry_limit if other.retry_limit is not None else self.retry_limit,
             verifier=other.verifier if other.verifier is not None else self.verifier,
+            story_cycle=other.story_cycle if other.story_cycle is not None else self.story_cycle,
         )
 
     def effective(self) -> "RalphConfig":
         verifier = self.verifier or VerifierConfig()
+        story_cycle = self.story_cycle or StoryCycleConfig()
         return RalphConfig(
             max_workers=self.max_workers or DEFAULT_MAX_WORKERS,
             retry_limit=self.retry_limit or DEFAULT_RETRY_LIMIT,
             verifier=verifier.effective(),
+            story_cycle=story_cycle.effective(),
         )
 
 
@@ -109,4 +124,18 @@ def render_config(config: RalphConfig) -> str:
                 escaped = command.replace('"', '\\"')
                 lines.append(f'  "{escaped}",')
             lines.append("]")
+    if config.story_cycle is not None and config.story_cycle.enabled:
+        lines.append("")
+        lines.append("[story_cycle]")
+        lines.append("enabled = true")
+        if config.story_cycle.max_step_retries != 3:
+            lines.append(f"max_step_retries = {config.story_cycle.max_step_retries}")
+        if config.story_cycle.artifacts_dir != StoryCycleConfig().artifacts_dir:
+            lines.append(f'artifacts_dir = "{config.story_cycle.artifacts_dir}"')
+        if config.story_cycle.prompt_max_chars != StoryCycleConfig().prompt_max_chars:
+            lines.append(f"prompt_max_chars = {config.story_cycle.prompt_max_chars}")
+        lines.append("steps = [")
+        for step in config.story_cycle.steps:
+            lines.append(f'  "{step}",')
+        lines.append("]")
     return "\n".join(lines) + ("\n" if lines else "")

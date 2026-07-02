@@ -41,6 +41,7 @@ class CommonTests(unittest.TestCase):
                 "pipeline_state",
                 "stories",
                 "story_dependencies",
+                "story_memory",
                 "workers",
             ],
         )
