@@ -8,8 +8,8 @@ Ralph pairs with [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) to 
 
 | Language | Guide |
 |----------|-------|
-| 中文 | [README.zh-CN.md](README.zh-CN.md) — 安装、配置、使用与开发（含用户管理系统示例） |
-| English | [README.en.md](README.en.md) — Install, configure, use, and develop |
+| 中文 | [README.zh-CN.md](README.zh-CN.md) — 安装、配置、**架构设计**、使用与开发 |
+| English | [README.en.md](README.en.md) — Install, configure, **architecture**, use, and develop |
 
 ## Workflow
 

@@ -390,7 +390,215 @@ ralph --config /path/to/custom.toml \
 | `RALPH_BMAD_SUBMODULE_URL` | Advanced/testing only: git submodule instead of npx |
 | `NO_COLOR` | Any non-empty value disables color output |
 
+## Architecture Design
+
+Ralph turns BMAD planning artifacts (`sprint-status.yaml`, story specs) into a parallel autonomous delivery pipeline. Epics 8–11 evolve it into a full **Agent OS** with this core data flow:
+
+```text
+Router → Memory → State FSM → Worker → Verifier → (loop/heal)
+```
+
+### Overall Architecture
+
+```mermaid
+flowchart TB
+    subgraph CLI["CLI Layer"]
+        init["ralph init"]
+        start["ralph start"]
+        status["ralph status / watch / diagnose"]
+    end
+
+    subgraph Daemon["Daemon Layer"]
+        lifecycle["lifecycle + IPC"]
+        tick["engine.tick() main loop"]
+    end
+
+    subgraph Pipeline["Pipeline Layer"]
+        ingest["ingestion / scheduler"]
+        engine["PipelineEngine"]
+        orch["StoryCycleOrchestrator"]
+        recover["orphan recovery"]
+        heal["HealingCoordinator L1→L2→L3"]
+    end
+
+    subgraph Worker["Worker Layer"]
+        router["BackendSelector / Router"]
+        mgr["WorkerManager"]
+        backends["ClaudeBackend / CommandBackend"]
+        wt["Git worktree isolation"]
+    end
+
+    subgraph Persist["Persistence"]
+        db[("SQLite WAL<br/>stories / workers / story_memory")]
+    end
+
+    start --> lifecycle --> tick
+    tick --> engine
+    engine --> ingest
+    engine --> orch
+    engine --> router --> mgr --> backends --> wt
+    engine --> heal
+    heal --> engine
+    engine --> db
+    status --> db
+```
+
+Dependency direction (unidirectional):
+
+```text
+cli.py → daemon/lifecycle.py → pipeline/engine.py
+  ├── pipeline/scheduler.py, dependency_graph.py, ingestion.py
+  ├── pipeline/orchestrator.py + story_cycle/config.py
+  ├── pipeline/recovery.py, healing/coordinator.py
+  ├── worker/manager.py → worker/backends/ (claude, command)
+  ├── router/selector.py
+  ├── memory/store.py, skill_loader.py, progress.py
+  ├── verifier/runner.py
+  └── common/db/store.py + schema.py
+```
+
+### Module Layers
+
+| Layer | Directory | Responsibility |
+|-------|-----------|----------------|
+| CLI | `cli.py`, `init_project.py` | 7 subcommands: start / stop / status / diagnose / retry / init / watch |
+| Daemon | `daemon/` | Background process lifecycle, Unix socket / loopback IPC |
+| Pipeline | `pipeline/` | State machine, dependency scheduling, artifact ingestion, Story Cycle orchestration, orphan recovery |
+| Self-healing | `pipeline/healing/` | Layer 1 step retry → Layer 2 worker restart → Layer 3 diagnose |
+| Verifier | `verifier/` | Objective test / lint / build gates inside worktrees |
+| Memory | `memory/` | Story progress, BMAD skill injection, phase artifact context |
+| Router | `router/` | Select worker backend per Story Cycle step |
+| Worker | `worker/` | Process spawning, health monitoring, worktrees, multi-backend abstraction |
+| Observability | `status/`, `diagnose/`, `render/`, `watch/` | Terminal snapshots, diagnostic reports, live dashboard |
+| Persistence | `common/db/` | SQLite schema, WAL mode, async access wrapper |
+| Config | `config/` | Three-tier config: CLI flags > project `ralph.toml` > user defaults |
+
+### Story State Machine
+
+```text
+                    ┌─────────────┐
+                    │   QUEUED    │
+                    └──────┬──────┘
+                           │ scheduled
+                           ▼
+                    ┌─────────────┐
+          ┌────────│ IN_PROGRESS │────────┐
+          │        └──────┬──────┘        │
+          │               │               │
+     retry on fail   verifier on      direct complete
+          │               │          (verifier off)
+          │               ▼               │
+          │        ┌─────────────┐          │
+          │        │  VERIFYING  │          │
+          │        └──────┬──────┘          │
+          │          pass │ fail            │
+          │               │                 ▼
+          │               │          ┌─────────────┐
+          └───────────────┼─────────►│  IN_REVIEW  │
+                            │          └──────┬──────┘
+                            ▼                 │
+                       ┌─────────┐              │
+                       │  DONE   │◄─────────────┘
+                       └─────────┘
+
+     BLOCKED ──(deps met)──► IN_PROGRESS
+     FAILED  ──(ralph retry)──► QUEUED
+```
+
+| State | Meaning |
+|-------|---------|
+| `QUEUED` | Ingested, waiting for scheduling (dependencies satisfied) |
+| `IN_PROGRESS` | Worker executing the current Story Cycle step |
+| `VERIFYING` | Worker finished; system runs objective verification commands |
+| `IN_REVIEW` | Completion pending without verifier (legacy-compatible path) |
+| `DONE` / `FAILED` / `BLOCKED` | Terminal or waiting on dependencies |
+
+### Pipeline State
+
+The daemon main loop maintains global `PipelineState`:
+
+| State | Meaning |
+|-------|---------|
+| `IDLE` | Not started or no active stories |
+| `RUNNING` | Normal scheduling and execution |
+| `HEALING` | At least one story in Layer 1–3 self-healing |
+| `COMPLETE` | All stories in the current sprint reached a terminal state |
+| `PAUSED` / `FAILED` | Reserved for future use |
+
+### Story Cycle Sub-phases (optional)
+
+When `[story_cycle]` is enabled, each story runs multiple independent worker sessions in order:
+
+```text
+atdd → dev → verify → qa
+         │      │      │
+         │      │      └── Claude / Codex / Gemini (selected by Router)
+         │      └── Verifier commands (no Claude)
+         └── Implementation phase (default-only path)
+```
+
+- Per-step failures go through three-layer healing; context passes between steps via `MemoryStore` + skill injection
+- The `verify` step reuses `[verifier]` configuration
+- On completion, syncs `sprint-status.yaml` and optional `story-{key}-progress.md`
+
+### Three-Layer Self-Healing
+
+```text
+Failure event
+   │
+   ▼
+Layer 1: Step Retry ──► Retry current step in same worktree (retry_limit)
+   │ exhausted
+   ▼
+Layer 2: Worker Restart ──► Destroy worktree, new branch, respawn worker
+   │ exhausted
+   ▼
+Layer 3: Diagnose ──► Write diagnostic_reports, mark FAILED
+```
+
+`ralph diagnose <story_id>` and `ralph retry <story_id>` view Layer 3 reports and manually reset failed stories.
+
+### Data Flow (single tick)
+
+```text
+engine.tick()
+  1. recover_orphaned_stories()     # reclaim orphaned story / worker
+  2. Load stories + dependency_graph
+  3. scheduler picks schedulable stories (max_workers cap)
+  4. BackendSelector picks backend for current step
+  5. MemoryStore assembles prompt (progress + skills)
+  6. WorkerManager.spawn_for_story()
+  7. Poll worker exit → verifier / next cycle step / complete
+  8. On failure → HealingCoordinator → may enter HEALING
+  9. Persist pipeline_events, update sprint-status
+```
+
+### SQLite Table Responsibilities
+
+| Table | Purpose |
+|-------|---------|
+| `stories` | Story metadata and current `state` |
+| `story_dependencies` | Inter-story dependency edges |
+| `workers` | Worker process, worktree path, health |
+| `story_memory` | Story Cycle progress, completed steps, context key-values |
+| `healing_attempts` | Self-healing attempt records per layer |
+| `diagnostic_reports` | Layer 3 root-cause analysis and recommendations |
+| `pipeline_state` | Global pipeline state (single row) |
+| `pipeline_events` | Observable events: verification failures, state transitions |
+
+### Optional Features vs Defaults
+
+| Config section | Default | When enabled |
+|----------------|---------|--------------|
+| `[verifier]` | `enabled=false` | After worker success, enter `VERIFYING` and run command gates |
+| `[story_cycle]` | `enabled=false`, `dev` only | Multi-phase BMAD-equivalent orchestration with Memory injection |
+| `[router]` | unset / disabled | All workers use Claude; when enabled, route backends via `rules` |
+
+**Backward compatible**: without these sections enabled, behavior matches legacy `ralph start` (single Claude worker, `IN_REVIEW → DONE`). See the Configuration section above for details.
+
 ## How It Works
+
+End-to-end flow (see Architecture Design for detail):
 
 ```text
 BMAD Sprint Plan
@@ -399,10 +607,12 @@ BMAD Sprint Plan
 ralph start ──► Ingest sprint-status.yaml + story files
        │
        ▼
-Daemon scheduler ──► Dependency-aware parallel dispatch (max_workers cap)
+Daemon (engine.tick loop) ──► Dependency-aware parallel dispatch (max_workers)
        │
-       ▼
-Workers (git worktree isolation) ──► Claude Code executes story
+       ├── Router selects backend ──► Memory injects prompt
+       ├── Worker (git worktree isolation) ──► Claude / other CLI executes story
+       ├── Verifier gate (optional)
+       └── Story Cycle multi-phase (optional)
        │
        ├── Layer 1: Step retry (retry_limit)
        ├── Layer 2: Worker restart (fresh worktree)
@@ -438,18 +648,29 @@ ralph status / watch ──► Developer monitoring (human-on-the-loop)
 
 ```text
 src/ralph/
-├── cli.py              # CLI entry (7 subcommands)
-├── config/             # TOML config resolution
-├── daemon/             # Process lifecycle and IPC
-├── pipeline/           # State machine, scheduling, artifact ingestion
-├── worker/             # Claude process and worktree isolation
-├── status/ / render/   # Terminal rendering and status snapshots
-├── diagnose/ / retry/  # Self-healing Layer 3 and manual retry
-├── planning/           # BMAD submodule integration
-└── watch/              # Live dashboard
+├── cli.py                    # CLI entry (7 subcommands)
+├── config/                   # TOML config (verifier / story_cycle / router)
+├── daemon/                   # Process lifecycle and IPC
+├── pipeline/
+│   ├── engine.py             # PipelineEngine main loop
+│   ├── scheduler.py          # Dependency-aware scheduling
+│   ├── orchestrator.py       # Story Cycle sub-phase orchestration
+│   ├── story_cycle/          # Multi-phase configuration
+│   ├── recovery.py           # Orphan story / worker recovery
+│   └── healing/              # Layer 1–3 self-healing
+├── worker/
+│   ├── manager.py            # Worker spawning and health monitoring
+│   └── backends/             # ClaudeBackend / CommandBackend
+├── router/                   # Multi-model backend selection
+├── memory/                   # story_memory, skill injection, progress sync
+├── verifier/                 # Objective verification gates
+├── status/ / render/         # Terminal rendering and status snapshots
+├── diagnose/ / retry/        # Layer 3 diagnostics and manual retry
+├── planning/                 # BMAD install integration
+└── watch/                    # Live dashboard
 
-tests_python/           # Python unit and integration tests
-scripts/ci-local.sh     # Local CI reproduction
+tests_python/                 # Python unit and integration tests
+scripts/ci-local.sh           # Local CI reproduction
 .github/workflows/ci.yml
 ```
 

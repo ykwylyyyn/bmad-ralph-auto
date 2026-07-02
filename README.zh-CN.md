@@ -659,7 +659,215 @@ ralph --config /path/to/custom.toml \
 | `RALPH_BMAD_SUBMODULE_URL` | 仅测试/高级：用 git submodule 代替 npx 安装 |
 | `NO_COLOR` | 设置任意非空值时禁用颜色输出 |
 
+## 架构设计
+
+Ralph 将 BMAD 规划产物（`sprint-status.yaml`、story 规格）转化为可并行执行的自主交付流水线。Epic 8–11 将其演进为完整的 **Agent OS** 架构，核心数据流为：
+
+```text
+Router → Memory → State FSM → Worker → Verifier → (loop/heal)
+```
+
+### 总体架构
+
+```mermaid
+flowchart TB
+    subgraph CLI["CLI 层"]
+        init["ralph init"]
+        start["ralph start"]
+        status["ralph status / watch / diagnose"]
+    end
+
+    subgraph Daemon["Daemon 层"]
+        lifecycle["lifecycle + IPC"]
+        tick["engine.tick() 主循环"]
+    end
+
+    subgraph Pipeline["Pipeline 层"]
+        ingest["ingestion / scheduler"]
+        engine["PipelineEngine"]
+        orch["StoryCycleOrchestrator"]
+        recover["orphan recovery"]
+        heal["HealingCoordinator L1→L2→L3"]
+    end
+
+    subgraph Worker["Worker 层"]
+        router["BackendSelector / Router"]
+        mgr["WorkerManager"]
+        backends["ClaudeBackend / CommandBackend"]
+        wt["Git worktree 隔离"]
+    end
+
+    subgraph Persist["持久化"]
+        db[("SQLite WAL<br/>stories / workers / story_memory")]
+    end
+
+    start --> lifecycle --> tick
+    tick --> engine
+    engine --> ingest
+    engine --> orch
+    engine --> router --> mgr --> backends --> wt
+    engine --> heal
+    heal --> engine
+    engine --> db
+    status --> db
+```
+
+依赖方向（单向）：
+
+```text
+cli.py → daemon/lifecycle.py → pipeline/engine.py
+  ├── pipeline/scheduler.py, dependency_graph.py, ingestion.py
+  ├── pipeline/orchestrator.py + story_cycle/config.py
+  ├── pipeline/recovery.py, healing/coordinator.py
+  ├── worker/manager.py → worker/backends/ (claude, command)
+  ├── router/selector.py
+  ├── memory/store.py, skill_loader.py, progress.py
+  ├── verifier/runner.py
+  └── common/db/store.py + schema.py
+```
+
+### 模块分层
+
+| 层级 | 目录 | 职责 |
+|------|------|------|
+| CLI | `cli.py`, `init_project.py` | 7 个子命令：start / stop / status / diagnose / retry / init / watch |
+| Daemon | `daemon/` | 后台进程生命周期、Unix socket / loopback IPC |
+| Pipeline | `pipeline/` | 状态机、依赖调度、artifact 摄入、Story Cycle 编排、孤儿回收 |
+| Self-healing | `pipeline/healing/` | Layer 1 步骤重试 → Layer 2 worker 重启 → Layer 3 diagnose |
+| Verifier | `verifier/` | 在 worktree 内执行 test / lint / build 客观门禁 |
+| Memory | `memory/` | story 进度、BMAD skill 注入、阶段产物上下文 |
+| Router | `router/` | 按 Story Cycle 阶段选择 Worker 后端 |
+| Worker | `worker/` | 进程孵化、健康监控、worktree、多后端抽象 |
+| Observability | `status/`, `diagnose/`, `render/`, `watch/` | 终端状态快照、诊断报告、实时 dashboard |
+| Persistence | `common/db/` | SQLite schema、WAL 模式、异步访问封装 |
+| Config | `config/` | 三层配置：CLI flags > 项目 `ralph.toml` > 用户默认值 |
+
+### Story 状态机
+
+```text
+                    ┌─────────────┐
+                    │   QUEUED    │
+                    └──────┬──────┘
+                           │ 调度分配
+                           ▼
+                    ┌─────────────┐
+          ┌────────│ IN_PROGRESS │────────┐
+          │        └──────┬──────┘        │
+          │               │               │
+     失败重试        verifier 开启      直接完成
+          │               │          (verifier 关闭)
+          │               ▼               │
+          │        ┌─────────────┐          │
+          │        │  VERIFYING  │          │
+          │        └──────┬──────┘          │
+          │          通过 │ 失败            │
+          │               │                 ▼
+          │               │          ┌─────────────┐
+          └───────────────┼─────────►│  IN_REVIEW  │
+                            │          └──────┬──────┘
+                            ▼                 │
+                       ┌─────────┐              │
+                       │  DONE   │◄─────────────┘
+                       └─────────┘
+
+     BLOCKED ──(依赖解除)──► IN_PROGRESS
+     FAILED  ──(ralph retry)──► QUEUED
+```
+
+| 状态 | 含义 |
+|------|------|
+| `QUEUED` | 已摄入、等待调度（依赖已满足） |
+| `IN_PROGRESS` | Worker 正在执行当前 Story Cycle 阶段 |
+| `VERIFYING` | Worker 完成，系统执行客观验证命令 |
+| `IN_REVIEW` | 无 verifier 时的完成待确认态（兼容旧行为） |
+| `DONE` / `FAILED` / `BLOCKED` | 终态或等待依赖 |
+
+### Pipeline 状态
+
+Daemon 主循环维护全局 `PipelineState`：
+
+| 状态 | 含义 |
+|------|------|
+| `IDLE` | 尚未启动或无活跃 story |
+| `RUNNING` | 正常调度与执行 |
+| `HEALING` | 至少一个故事正在 Layer 1–3 自愈 |
+| `COMPLETE` | 当前 sprint 全部 story 已终态 |
+| `PAUSED` / `FAILED` | 预留扩展 |
+
+### Story Cycle 子阶段（可选）
+
+启用 `[story_cycle]` 后，每个 story 按配置顺序执行多个独立 worker session：
+
+```text
+atdd → dev → verify → qa
+         │      │      │
+         │      │      └── Claude / Codex / Gemini（由 Router 选择）
+         │      └── Verifier 命令（无 Claude）
+         └── 实现阶段（默认仅此阶段）
+```
+
+- 每阶段失败走三层自愈；阶段间上下文通过 `MemoryStore` + skill 注入传递
+- `verify` 阶段复用 `[verifier]` 配置
+- 完成后同步 `sprint-status.yaml` 与可选的 `story-{key}-progress.md`
+
+### 三层自愈
+
+```text
+失败事件
+   │
+   ▼
+Layer 1: Step Retry ──► 同 worktree 内重试当前步骤（retry_limit）
+   │ 耗尽
+   ▼
+Layer 2: Worker Restart ──► 销毁 worktree、新建分支、重新孵化 worker
+   │ 耗尽
+   ▼
+Layer 3: Diagnose ──► 生成 diagnostic_reports，标记 FAILED
+```
+
+`ralph diagnose <story_id>` 与 `ralph retry <story_id>` 分别用于查看 Layer 3 报告与手动重置失败 story。
+
+### 数据流（单次 tick）
+
+```text
+engine.tick()
+  1. recover_orphaned_stories()     # 回收孤儿 story / worker
+  2. 读取 stories + dependency_graph
+  3. scheduler 选出可调度 story（max_workers 上限）
+  4. BackendSelector 按当前 step 选后端
+  5. MemoryStore 组装 prompt（progress + skills）
+  6. WorkerManager.spawn_for_story()
+  7. 轮询 worker 退出 → verifier / 下一 cycle step / 完成
+  8. 失败 → HealingCoordinator → 可能进入 HEALING
+  9. 持久化 pipeline_events、更新 sprint-status
+```
+
+### SQLite 表职责
+
+| 表 | 用途 |
+|----|------|
+| `stories` | Story 元数据与当前 `state` |
+| `story_dependencies` | Story 间依赖边 |
+| `workers` | Worker 进程、worktree 路径、健康状态 |
+| `story_memory` | Story Cycle 进度、已完成步骤、上下文键值 |
+| `healing_attempts` | 自愈各层尝试记录 |
+| `diagnostic_reports` | Layer 3 根因分析与建议 |
+| `pipeline_state` | 全局 Pipeline 状态（单行） |
+| `pipeline_events` | 验证失败、状态迁移等可观测事件 |
+
+### 可选能力与默认行为
+
+| 配置段 | 默认 | 启用后变化 |
+|--------|------|-----------|
+| `[verifier]` | `enabled=false` | Worker 成功后进入 `VERIFYING`，执行命令门禁 |
+| `[story_cycle]` | `enabled=false`，仅 `dev` | 多阶段 BMAD 等价编排，Memory 注入 |
+| `[router]` | 未配置 / 未启用 | 全部 worker 使用 Claude；启用后按 `rules` 路由后端 |
+
+**向后兼容**：未启用上述配置时，行为与旧版 `ralph start` 一致（单 Claude worker、`IN_REVIEW → DONE`）。配置详情见上文「配置」章节。
+
 ## 工作方式
+
+端到端流程概览（详见「架构设计」）：
 
 ```text
 BMAD Sprint Plan
@@ -668,10 +876,12 @@ BMAD Sprint Plan
 ralph start ──► 摄入 sprint-status.yaml + story 文件
        │
        ▼
-Daemon 调度器 ──► 依赖感知并行分配（受 max_workers 限制）
+Daemon（engine.tick 循环）──► 依赖感知并行分配（max_workers）
        │
-       ▼
-Worker（git worktree 隔离）──► Claude Code 执行 story
+       ├── Router 选后端 ──► Memory 注入 prompt
+       ├── Worker（git worktree 隔离）──► Claude / 其他 CLI 执行 story
+       ├── Verifier 门禁（可选）
+       └── Story Cycle 多阶段（可选）
        │
        ├── Layer 1: 步骤重试（retry_limit）
        ├── Layer 2: Worker 重启（新 worktree）
@@ -707,18 +917,29 @@ ralph status / watch ──► 开发者监控（human-on-the-loop）
 
 ```text
 src/ralph/
-├── cli.py              # CLI 入口（7 个子命令）
-├── config/             # TOML 配置解析
-├── daemon/             # 进程生命周期与 IPC
-├── pipeline/           # 状态机、调度、artifact 摄入
-├── worker/             # Claude 进程与 worktree 隔离
-├── status/ / render/   # 终端渲染与状态快照
-├── diagnose/ / retry/  # 自愈 Layer 3 与手动重试
-├── planning/           # BMAD submodule 集成
-└── watch/              # 实时 dashboard
+├── cli.py                    # CLI 入口（7 个子命令）
+├── config/                   # TOML 配置解析（verifier / story_cycle / router）
+├── daemon/                   # 进程生命周期与 IPC
+├── pipeline/
+│   ├── engine.py             # PipelineEngine 主循环
+│   ├── scheduler.py          # 依赖感知调度
+│   ├── orchestrator.py       # Story Cycle 子阶段编排
+│   ├── story_cycle/          # 多阶段配置
+│   ├── recovery.py           # 孤儿 story / worker 回收
+│   └── healing/              # Layer 1–3 自愈
+├── worker/
+│   ├── manager.py            # Worker 孵化与健康监控
+│   └── backends/             # ClaudeBackend / CommandBackend
+├── router/                   # 多模型后端选择
+├── memory/                   # story_memory、skill 注入、进度同步
+├── verifier/                 # 客观验证门禁
+├── status/ / render/         # 终端渲染与状态快照
+├── diagnose/ / retry/        # Layer 3 诊断与手动重试
+├── planning/                 # BMAD 安装集成
+└── watch/                    # 实时 dashboard
 
-tests_python/           # Python 单元与集成测试
-scripts/ci-local.sh     # 本地复现 CI
+tests_python/                 # Python 单元与集成测试
+scripts/ci-local.sh           # 本地复现 CI
 .github/workflows/ci.yml
 ```
 
