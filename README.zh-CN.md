@@ -545,6 +545,68 @@ commands = ["make test-all"]
 
 `commands` 为空时视为未启用（向后兼容）。
 
+#### Story Cycle 多阶段编排（可选）
+
+默认关闭（`enabled=false`），行为与旧版一致：单次 dev worker + 可选 verifier。
+
+启用后可按 BMAD 等价阶段自动串联（每阶段独立 Claude session，worktree 跨阶段复用）：
+
+```toml
+[story_cycle]
+enabled = true
+steps = ["dev", "verify"]
+max_step_retries = 3
+artifacts_dir = "_bmad-output"
+prompt_max_chars = 32000
+```
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `story_cycle.enabled` | `false` | 是否启用多阶段编排 |
+| `story_cycle.steps` | `["dev"]` | 阶段序列：`atdd`、`dev`、`verify`、`qa` |
+| `story_cycle.max_step_retries` | `3` | 单阶段失败重试上限（接入 Layer 1–3 自愈） |
+| `story_cycle.artifacts_dir` | `_bmad-output` | BMAD 产物根目录 |
+| `story_cycle.prompt_max_chars` | `32000` | prompt 字符上限（防超 context） |
+
+`verify` 阶段使用 `[verifier]` 命令，不启动 Claude。阶段完成后会同步 `sprint-status.yaml` 与可选的 `story-{key}-progress.md`。
+
+#### 多模型 Router（可选）
+
+未配置 `[router]` 时，所有 worker 使用 Claude CLI（与旧版相同）。
+
+按 story cycle 阶段路由到不同 CLI 后端（如 dev 用 Claude、qa 用 Codex/Gemini）：
+
+```toml
+[router]
+default = "claude"
+
+[router.backends.claude]
+command = "claude"
+args = ["--dangerously-skip-permissions"]
+
+[router.backends.gemini]
+command = "gemini"
+args = ["-p"]
+model = "gemini-pro"
+output_format = "claude_json"
+
+[router.rules]
+dev = "claude"
+qa = "gemini"
+```
+
+| 字段 | 说明 |
+|------|------|
+| `router.default` | 未命中规则时的默认后端名 |
+| `router.backends.<name>.command` | 可执行文件 |
+| `router.backends.<name>.args` | 固定参数列表 |
+| `router.backends.<name>.model` | 展示用模型名（写入 status/diagnose） |
+| `router.backends.<name>.output_format` | `claude_json`（默认）或 `plain` |
+| `router.backends.<name>.append_prompt` | `true` 时将 prompt 作为末参数（自定义脚本） |
+| `router.rules.<step>` | 阶段名 → 后端名（如 `dev`、`qa`） |
+
+`ralph status --detail` 会显示每个 story 最近使用的 backend、model、cost（若 CLI JSON 输出含 `cost_usd`）。
+
 使用 `--force` 可覆盖已有配置：
 
 ```bash
