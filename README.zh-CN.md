@@ -347,18 +347,21 @@ ralph init
 
 初始化后目录应包含 `ralph.toml`、`_bmad/`、`.claude/skills/bmad-sprint-planning` 等。
 
-### 第 1 步：一次性规划（Phase 3）
+### 第 1 步：一次性规划（Phase 2 + Phase 3）
 
-在 Claude Code 中**按顺序**执行（每个命令开新窗口）：
+在 Claude Code 中**按顺序**执行（每个命令开新窗口）。**权威顺序见 [WORKFLOW.zh-CN.md](WORKFLOW.zh-CN.md)**。
 
-| 顺序 | 在 Claude Code 中输入 | 目的 | 主要产物 |
-|------|----------------------|------|----------|
-| 1 | `bmad-help` 或 `/bmad-bmm-create-prd` | 明确产品需求 | `_bmad-output/planning-artifacts/prd.md` |
-| 2 | `/bmad-bmm-create-architecture` | 技术架构（FastAPI、SQLite、JWT） | `architecture.md` |
-| 3 | `/bmad-bmm-create-epics-and-stories` | 拆分 Epic | `epics.md` |
-| 4 | `/bmad-tea-testarch-test-design` | 测试策略（可选） | `test-design-qa.md` |
-| 5 | `/bmad-bmm-check-implementation-readiness` | 实现就绪检查 | 就绪报告 |
-| 6 | `/bmad-tea-testarch-ci` | CI 流水线（可选） | `.github/workflows/ci.yml` |
+| 顺序 | 在 Claude Code 中输入 | 目的 | 主要产物 | 必需 |
+|------|----------------------|------|----------|------|
+| 0 | `bmad-help` 或 `/bmad-bmm-create-prd` | 明确产品需求（Phase 2 前置） | `_bmad-output/planning-artifacts/prd.md` | **是** |
+| 1 | `/bmad-bmm-create-architecture` | 技术架构（FastAPI、SQLite、JWT） | `architecture.md` | **是** |
+| 2 | `/bmad-tea-testarch-test-design` | 测试策略与风险矩阵 | `test-design-qa.md` | 否 |
+| 3 | `/bmad-bmm-create-epics-and-stories` | 拆分 Epic 与 Story | `epics.md` | **是** |
+| 4 | `/bmad-tea-testarch-framework` | 测试框架脚手架 | 测试目录与配置 | 否 |
+| 5 | `/bmad-bmm-check-implementation-readiness` | 实现就绪检查 | 就绪报告 | **是** |
+| 6 | `/bmad-tea-testarch-ci` | CI 流水线 | `.github/workflows/ci.yml` | 否 |
+
+> **注意**：Test Design（步骤 2）在 Epics（步骤 3）**之前**，用于系统级测试策略；Epic/Story 级测试在 Story Cycle 中另行执行。
 
 **Epic 划分示例**（由步骤 3 产出，供参考）：
 

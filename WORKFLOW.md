@@ -8,9 +8,19 @@ This document interleaves **BMM** (BMAD Method Manager) and **TEA** (Test Engine
 
 ---
 
+## Phase 2 Prerequisite: Product Requirements (One-Time)
+
+Architecture and solutioning depend on a PRD. If `_bmad-output/planning-artifacts/prd.md` does not exist yet, run first:
+
+| # | Slash Command | Required | Agent | Notes |
+|---|--------------|----------|-------|-------|
+| — | `bmad-help` or `/bmad-bmm-create-prd` | REQUIRED | PM | Product requirements → `prd.md` |
+
+---
+
 ## Phase 3: Solutioning (One-Time)
 
-These steps are run once during project setup. Current status for bmad-ralph:
+Run once after the PRD exists. Current status for bmad-ralph:
 
 | # | Code | Slash Command | Required | Agent | Status |
 |---|------|--------------|----------|-------|--------|
